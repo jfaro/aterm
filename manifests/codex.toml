@@ -1,0 +1,36 @@
+# OpenAI Codex CLI. Verify changes against real screens with `aterm pane read <pane>`.
+id = "codex"
+
+[[rules]]
+id = "approval_prompt"
+state = "blocked"
+priority = 300
+region = "bottom(20)"
+any = [
+  { contains = ["allow command?"] },
+  { contains = ["press enter to confirm or esc to cancel"] },
+  { contains = ["enter to submit answer"] },
+  { contains = ["do you trust the contents of this directory?"] },
+  { contains = ["[y/n]"] },
+]
+
+[[rules]]
+id = "title_attention"
+state = "blocked"
+priority = 250
+region = "title"
+contains = ["action required"]
+
+[[rules]]
+id = "title_spinner"
+state = "working"
+priority = 200
+region = "title"
+regex = ['(?:^| )[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏](?: |$)']
+
+[[rules]]
+id = "interrupt_hint"
+state = "working"
+priority = 100
+region = "bottom(12)"
+contains = ["esc to interrupt"]

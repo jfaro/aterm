@@ -1,0 +1,107 @@
+//! Wire protocol: newline-delimited JSON over a Unix socket.
+//!
+//! Clients send [`Request`]s. The server answers each with a [`Response`]
+//! carrying the same `id`, and pushes [`Event`]s to clients that called
+//! `events.subscribe`.
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+use crate::detect::AgentState;
+
+pub type PaneId = u32;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Request {
+    pub id: u64,
+    pub method: String,
+    #[serde(default)]
+    pub params: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Response {
+    pub id: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Event {
+    pub event: String,
+    pub data: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ServerMessage {
+    Response(Response),
+    Event(Event),
+}
+
+/// Runtime facts about a pane, shared by the server and every client.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PaneInfo {
+    pub id: PaneId,
+    pub name: String,
+    pub command: String,
+    pub cwd: String,
+    pub rows: u16,
+    pub cols: u16,
+    pub agent: Option<String>,
+    pub status: AgentState,
+    /// Id of the detection rule that produced `status`, for debugging manifests.
+    pub rule: Option<String>,
+}
+
+pub mod events {
+    pub const PANE_CREATED: &str = "pane.created";
+    pub const PANE_UPDATED: &str = "pane.updated";
+    pub const PANE_OUTPUT_CHANGED: &str = "pane.output_changed";
+    pub const PANE_AGENT_STATUS_CHANGED: &str = "pane.agent_status_changed";
+    pub const PANE_EXITED: &str = "pane.exited";
+    pub const PANE_CLOSED: &str = "pane.closed";
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn server_messages_round_trip() {
+        let response = ServerMessage::Response(Response {
+            id: 7,
+            result: Some(json!({"ok": true})),
+            error: None,
+        });
+        let event = ServerMessage::Event(Event {
+            event: events::PANE_CLOSED.into(),
+            data: json!({"pane": 3}),
+        });
+
+        let response_line = serde_json::to_string(&response).unwrap();
+        let event_line = serde_json::to_string(&event).unwrap();
+
+        assert!(matches!(
+            serde_json::from_str(&response_line).unwrap(),
+            ServerMessage::Response(Response { id: 7, .. })
+        ));
+        assert!(matches!(
+            serde_json::from_str(&event_line).unwrap(),
+            ServerMessage::Event(Event { ref event, .. }) if event == events::PANE_CLOSED
+        ));
+    }
+
+    #[test]
+    fn error_response_has_no_result() {
+        let line = r#"{"id":1,"error":"no such pane"}"#;
+        let ServerMessage::Response(response) = serde_json::from_str(line).unwrap() else {
+            panic!("expected response");
+        };
+        assert_eq!(response.error.as_deref(), Some("no such pane"));
+        assert!(response.result.is_none());
+    }
+}

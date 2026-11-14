@@ -1,0 +1,31 @@
+# Claude Code. Verify changes against real screens with `aterm pane read <pane>`.
+id = "claude"
+aliases = ["claude-code"]
+
+[[rules]]
+id = "permission_prompt"
+state = "blocked"
+priority = 300
+region = "bottom(15)"
+any = [
+  { contains = ["do you want to proceed?"] },
+  { contains = ["do you want to make this edit"] },
+  { contains = ["do you want to create"] },
+  { contains = ["enter to confirm", "esc to cancel"] },
+  { contains = ["enter to select", "esc to cancel"] },
+]
+
+# Claude shows a spinner in the window title while a turn is running.
+[[rules]]
+id = "title_spinner"
+state = "working"
+priority = 200
+region = "title"
+regex = ['^[\x{2800}-\x{28FF}\x{25D0}-\x{25D3}] ']
+
+[[rules]]
+id = "interrupt_hint"
+state = "working"
+priority = 100
+region = "bottom(12)"
+contains = ["esc to interrupt"]

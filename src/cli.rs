@@ -1,0 +1,226 @@
+//! One-shot commands: thin wrappers over the socket API.
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use anyhow::Result;
+use clap::Subcommand;
+use serde_json::{Value, json};
+
+use crate::detect::AgentState;
+use crate::protocol::{PaneId, PaneInfo};
+use crate::rpc::Connection;
+
+#[derive(Subcommand)]
+pub enum Command {
+    /// Run the server in the foreground (normally started automatically).
+    Server {
+        #[command(subcommand)]
+        action: Option<ServerAction>,
+    },
+    /// Create, inspect and drive panes.
+    Pane {
+        #[command(subcommand)]
+        action: PaneAction,
+    },
+    /// Wait on agent status.
+    Agent {
+        #[command(subcommand)]
+        action: AgentAction,
+    },
+    /// Stream server events as JSON lines.
+    Events,
+}
+
+#[derive(Subcommand)]
+pub enum ServerAction {
+    /// Stop the running server and every pane in it.
+    Stop,
+}
+
+#[derive(Subcommand)]
+pub enum PaneAction {
+    /// Start a pane running COMMAND (or your shell).
+    Create {
+        #[arg(long)]
+        name: Option<String>,
+        /// Working directory; defaults to the current one.
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+        #[arg(trailing_var_arg = true)]
+        command: Vec<String>,
+    },
+    /// List panes.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print a pane's visible screen.
+    Read {
+        pane: PaneId,
+        /// Only the last N non-blank lines.
+        #[arg(long)]
+        lines: Option<usize>,
+        /// Include colors and cursor state as ANSI escapes.
+        #[arg(long)]
+        ansi: bool,
+    },
+    /// Type literal text into a pane.
+    SendText {
+        pane: PaneId,
+        text: String,
+        /// Press enter afterwards.
+        #[arg(long)]
+        enter: bool,
+    },
+    /// Press named keys, e.g. `enter`, `ctrl-c`, `alt-left`, `up`.
+    SendKeys {
+        pane: PaneId,
+        #[arg(required = true)]
+        keys: Vec<String>,
+    },
+    Rename {
+        pane: PaneId,
+        name: String,
+    },
+    /// Kill a pane's process and remove it.
+    Close {
+        pane: PaneId,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum AgentAction {
+    /// Block until the agent in PANE reaches STATUS.
+    Wait {
+        pane: PaneId,
+        #[arg(long, value_enum)]
+        status: AgentState,
+        /// Give up after this many seconds.
+        #[arg(long)]
+        timeout: Option<f64>,
+    },
+}
+
+pub async fn run(command: Command) -> Result<()> {
+    match command {
+        Command::Server { action: None } => crate::server::run().await,
+        Command::Server {
+            action: Some(ServerAction::Stop),
+        } => {
+            let (conn, _) = Connection::connect().await?;
+            conn.call("server.stop", json!({})).await?;
+            Ok(())
+        }
+        Command::Pane { action } => {
+            let (conn, _) = Connection::connect_or_spawn().await?;
+            pane(&conn, action).await
+        }
+        Command::Agent {
+            action:
+                AgentAction::Wait {
+                    pane,
+                    status,
+                    timeout,
+                },
+        } => {
+            let (conn, _) = Connection::connect_or_spawn().await?;
+            let timeout_ms = timeout.map(|secs| (secs * 1000.0) as u64);
+            let info: PaneInfo = conn
+                .call_as(
+                    "agent.wait",
+                    json!({ "pane": pane, "status": status, "timeout_ms": timeout_ms }),
+                )
+                .await?;
+            println!("{}", serde_json::to_string(&info)?);
+            Ok(())
+        }
+        Command::Events => {
+            let (conn, mut events) = Connection::connect_or_spawn().await?;
+            conn.call("events.subscribe", json!({})).await?;
+            while let Some(event) = events.recv().await {
+                println!("{}", serde_json::to_string(&event)?);
+            }
+            Ok(())
+        }
+    }
+}
+
+async fn pane(conn: &Arc<Connection>, action: PaneAction) -> Result<()> {
+    match action {
+        PaneAction::Create { name, cwd, command } => {
+            let cwd = match cwd {
+                Some(dir) => Some(std::fs::canonicalize(dir)?),
+                None => std::env::current_dir().ok(),
+            };
+            let command = (!command.is_empty()).then(|| command.join(" "));
+            let info: PaneInfo = conn
+                .call_as(
+                    "pane.create",
+                    json!({ "command": command, "cwd": cwd, "name": name }),
+                )
+                .await?;
+            println!("{}", info.id);
+        }
+        PaneAction::List { json } => {
+            let panes: Vec<PaneInfo> = conn.call_as("pane.list", json!({})).await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&panes)?);
+            } else {
+                print_pane_table(&panes);
+            }
+        }
+        PaneAction::Read { pane, lines, ansi } => {
+            let format = if ansi { "ansi" } else { "text" };
+            let result = conn
+                .call(
+                    "pane.read",
+                    json!({ "pane": pane, "lines": lines, "format": format }),
+                )
+                .await?;
+            let body = result
+                .get(format)
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            println!("{body}");
+        }
+        PaneAction::SendText { pane, text, enter } => {
+            conn.call("pane.send_text", json!({ "pane": pane, "text": text }))
+                .await?;
+            if enter {
+                conn.call("pane.send_keys", json!({ "pane": pane, "keys": ["enter"] }))
+                    .await?;
+            }
+        }
+        PaneAction::SendKeys { pane, keys } => {
+            conn.call("pane.send_keys", json!({ "pane": pane, "keys": keys }))
+                .await?;
+        }
+        PaneAction::Rename { pane, name } => {
+            conn.call("pane.rename", json!({ "pane": pane, "name": name }))
+                .await?;
+        }
+        PaneAction::Close { pane } => {
+            conn.call("pane.close", json!({ "pane": pane })).await?;
+        }
+    }
+    Ok(())
+}
+
+fn print_pane_table(panes: &[PaneInfo]) {
+    println!(
+        "{:<4} {:<16} {:<8} {:<8} COMMAND",
+        "ID", "NAME", "AGENT", "STATUS"
+    );
+    for pane in panes {
+        let status = serde_json::to_value(pane.status).ok();
+        println!(
+            "{:<4} {:<16} {:<8} {:<8} {}",
+            pane.id,
+            pane.name,
+            pane.agent.as_deref().unwrap_or("-"),
+            status.as_ref().and_then(Value::as_str).unwrap_or("?"),
+            pane.command,
+        );
+    }
+}
