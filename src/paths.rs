@@ -11,6 +11,7 @@ pub fn socket_path() -> PathBuf {
     }
 }
 
+/// Path to the ATERM server logs.
 pub fn log_path() -> PathBuf {
     socket_path().with_extension("log")
 }

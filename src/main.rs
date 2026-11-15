@@ -23,6 +23,8 @@ struct Cli {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+
+    // Create a new runtime.
     let runtime = match tokio::runtime::Runtime::new() {
         Ok(runtime) => runtime,
         Err(err) => {
@@ -30,12 +32,16 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+
+    // Run the aterm application.
     let result = runtime.block_on(async {
         match cli.command {
             None => client::attach().await,
             Some(command) => cli::run(command).await,
         }
     });
+
+    // Handle server exit result.
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
