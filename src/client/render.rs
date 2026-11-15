@@ -1,5 +1,8 @@
 //! Pure rendering: draws a [`View`] and never mutates it.
 
+use std::time::Duration;
+use std::time::SystemTime;
+
 use ratatui::Frame;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
@@ -21,22 +24,24 @@ use super::view::View;
 use super::view::areas;
 use crate::detect::AgentState;
 use crate::protocol::PaneInfo;
+use crate::protocol::unix_millis;
 
 const HINTS: &str =
     " ctrl-b  c shell · a command · n/p switch · J/K move · r rename · x close · d detach";
 
-pub fn render(frame: &mut Frame, view: &View) {
+/// Draws `view` as of `now`, which dates the sidebar's status durations.
+pub fn render(frame: &mut Frame, view: &View, now: SystemTime) {
     let Areas {
         sidebar,
         pane,
         status,
     } = areas(frame.area());
-    render_sidebar(frame, sidebar, view);
+    render_sidebar(frame, sidebar, view, unix_millis(now));
     render_pane(frame, pane, view);
     render_status(frame, status, view);
 }
 
-fn render_sidebar(frame: &mut Frame, area: Rect, view: &View) {
+fn render_sidebar(frame: &mut Frame, area: Rect, view: &View, now_ms: u64) {
     let block = Block::new()
         .borders(Borders::RIGHT)
         .border_style(Style::new().dark_gray())
@@ -48,17 +53,37 @@ fn render_sidebar(frame: &mut Frame, area: Rect, view: &View) {
         .panes
         .iter()
         .enumerate()
-        .map(|(index, pane)| sidebar_row(index, pane, Some(pane.id) == view.focused, inner.width))
+        .map(|(index, pane)| {
+            sidebar_row(
+                index,
+                pane,
+                Some(pane.id) == view.focused,
+                inner.width,
+                now_ms,
+            )
+        })
         .collect();
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-fn sidebar_row(index: usize, pane: &PaneInfo, focused: bool, width: u16) -> Line<'static> {
-    let (dot, color, label) = match pane.status {
+fn sidebar_row(
+    index: usize,
+    pane: &PaneInfo,
+    focused: bool,
+    width: u16,
+    now_ms: u64,
+) -> Line<'static> {
+    let (dot, color, state) = match pane.status {
         AgentState::Working => ("●", Color::Yellow, "working"),
         AgentState::Blocked => ("●", Color::Red, "blocked"),
         AgentState::Idle => ("●", Color::Green, "idle"),
         AgentState::Unknown => ("○", Color::DarkGray, ""),
+    };
+    let label = if state.is_empty() {
+        String::new()
+    } else {
+        let elapsed = Duration::from_millis(now_ms.saturating_sub(pane.status_since));
+        format!("{state} {}", format_elapsed(elapsed))
     };
     let marker = if focused { "▌" } else { " " };
     let name_width = (width as usize).saturating_sub(4 + 1 + label.len() + 1);
@@ -78,6 +103,34 @@ fn sidebar_row(index: usize, pane: &PaneInfo, focused: bool, width: u16) -> Line
         Span::styled(format!("{name:<name_width$} "), row_style),
         Span::styled(label, Style::new().fg(color)),
     ])
+}
+
+/// Compact elapsed time in the largest whole unit: `42s`, `5m`, `3h`, `2d`.
+fn format_elapsed(elapsed: Duration) -> String {
+    let secs = elapsed.as_secs();
+    match secs {
+        0..60 => format!("{secs}s"),
+        60..3_600 => format!("{}m", secs / 60),
+        3_600..86_400 => format!("{}h", secs / 3_600),
+        _ => format!("{}d", secs / 86_400),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn elapsed_uses_largest_whole_unit() {
+        let format = |secs| format_elapsed(Duration::from_secs(secs));
+        assert_eq!(format(0), "0s");
+        assert_eq!(format(59), "59s");
+        assert_eq!(format(60), "1m");
+        assert_eq!(format(3_599), "59m");
+        assert_eq!(format(3_600), "1h");
+        assert_eq!(format(86_399), "23h");
+        assert_eq!(format(86_400 * 3), "3d");
+    }
 }
 
 fn render_pane(frame: &mut Frame, area: Rect, view: &View) {

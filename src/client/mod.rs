@@ -7,6 +7,7 @@ mod view;
 use std::io::stdout;
 use std::sync::Arc;
 use std::time::Duration;
+use std::time::SystemTime;
 
 use anyhow::Result;
 use anyhow::bail;
@@ -23,6 +24,7 @@ use ratatui::layout::Rect;
 use serde_json::Value;
 use serde_json::json;
 use tokio::sync::mpsc;
+use tokio::time::MissedTickBehavior;
 
 use crate::protocol::Event;
 use crate::protocol::PaneId;
@@ -34,6 +36,8 @@ use view::Mode;
 use view::PromptKind;
 use view::View;
 use view::areas;
+
+const CLOCK_TICK: Duration = Duration::from_secs(1);
 
 pub async fn attach() -> Result<()> {
     let (conn, server_events) = Connection::connect_or_spawn().await?;
@@ -76,6 +80,9 @@ impl App {
         let mut terminal_events = spawn_terminal_reader();
         let size = terminal.size()?;
         self.pane_area = areas(Rect::new(0, 0, size.width, size.height)).pane;
+        // Redraws periodically so the sidebar's status durations keep counting.
+        let mut clock = tokio::time::interval(CLOCK_TICK);
+        clock.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
         while !self.quit {
             if self.list_dirty {
@@ -84,9 +91,10 @@ impl App {
             if self.screen_dirty {
                 self.refresh_screen().await;
             }
-            terminal.draw(|frame| render::render(frame, &self.view))?;
+            terminal.draw(|frame| render::render(frame, &self.view, SystemTime::now()))?;
 
             tokio::select! {
+                _ = clock.tick() => {}
                 Some(event) = terminal_events.recv() => self.on_terminal_event(event).await,
                 event = server_events.recv() => match event {
                     Some(event) => self.on_server_event(&event),
