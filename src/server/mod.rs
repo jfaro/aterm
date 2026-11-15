@@ -13,6 +13,7 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+use std::time::SystemTime;
 
 use anyhow::Context;
 use anyhow::Result;
@@ -45,6 +46,7 @@ use crate::protocol::Request;
 use crate::protocol::Response;
 use crate::protocol::ServerMessage;
 use crate::protocol::events;
+use crate::protocol::unix_millis;
 use pane::PaneRuntime;
 use pane::SpawnSpec;
 use pane::Terminal;
@@ -186,6 +188,7 @@ impl Server {
             cols,
             agent: None,
             status: AgentState::Unknown,
+            status_since: unix_millis(SystemTime::now()),
             rule: None,
         };
         inner.state.insert(info.clone());
@@ -332,9 +335,12 @@ impl Server {
 
             let changed = {
                 let mut inner = self.inner.lock().unwrap();
-                inner
-                    .state
-                    .apply_detection(id, agent.clone(), detection.clone())
+                inner.state.apply_detection(
+                    id,
+                    agent.clone(),
+                    detection.clone(),
+                    unix_millis(SystemTime::now()),
+                )
             };
             if changed {
                 self.emit(

@@ -4,6 +4,9 @@
 //! carrying the same `id`, and pushes [`Event`]s to clients that called
 //! `events.subscribe`.
 
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
+
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
@@ -69,8 +72,17 @@ pub struct PaneInfo {
     /// What the agent is doing, or `Unknown` when no agent was identified.
     pub status: AgentState,
 
+    /// When `status` (or `agent`) last changed, in Unix milliseconds.
+    pub status_since: u64,
+
     /// Id of the detection rule that produced `status`, for debugging manifests.
     pub rule: Option<String>,
+}
+
+/// Milliseconds since the Unix epoch, saturating at zero for pre-epoch clocks.
+pub fn unix_millis(time: SystemTime) -> u64 {
+    time.duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as u64)
 }
 
 pub mod events {

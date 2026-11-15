@@ -134,6 +134,7 @@ mod tests {
             cols: 1,
             agent: None,
             status: AgentState::Unknown,
+            status_since: 0,
             rule: None,
         }
     }

@@ -38,18 +38,22 @@ impl AppState {
         self.panes.values().cloned().collect()
     }
 
-    /// Records a detection result. Returns true when the agent or its status
-    /// changed, i.e. when observers should be notified.
+    /// Records a detection result observed at `now_ms`. Returns true when the
+    /// agent or its status changed, i.e. when observers should be notified.
     pub fn apply_detection(
         &mut self,
         id: PaneId,
         agent: Option<String>,
         detection: Detection,
+        now_ms: u64,
     ) -> bool {
         let Some(pane) = self.panes.get_mut(&id) else {
             return false;
         };
         let changed = pane.agent != agent || pane.status != detection.state;
+        if changed {
+            pane.status_since = now_ms;
+        }
         pane.agent = agent;
         pane.status = detection.state;
         pane.rule = detection.rule;
@@ -72,6 +76,7 @@ mod tests {
             cols: 80,
             agent: None,
             status: AgentState::Unknown,
+            status_since: 0,
             rule: None,
         }
     }
@@ -95,17 +100,21 @@ mod tests {
             rule: Some("spinner".into()),
         };
 
-        assert!(state.apply_detection(id, Some("claude".into()), working()));
-        assert!(!state.apply_detection(id, Some("claude".into()), working()));
+        assert!(state.apply_detection(id, Some("claude".into()), working(), 10));
+        assert!(!state.apply_detection(id, Some("claude".into()), working(), 20));
+        assert_eq!(state.get(id).unwrap().status_since, 10);
         assert!(state.apply_detection(
             id,
             None,
             Detection {
                 state: AgentState::Unknown,
                 rule: None
-            }
+            },
+            30
         ));
-        assert!(!state.apply_detection(999, None, working()));
-        assert_eq!(state.get(id).unwrap().status, AgentState::Unknown);
+        assert!(!state.apply_detection(999, None, working(), 40));
+        let pane = state.get(id).unwrap();
+        assert_eq!(pane.status, AgentState::Unknown);
+        assert_eq!(pane.status_since, 30);
     }
 }
