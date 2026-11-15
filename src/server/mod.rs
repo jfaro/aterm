@@ -40,6 +40,8 @@ use crate::detect::process;
 use crate::keys;
 use crate::paths;
 use crate::protocol::Event;
+use crate::protocol::FolderId;
+use crate::protocol::FolderInfo;
 use crate::protocol::PaneId;
 use crate::protocol::PaneInfo;
 use crate::protocol::Request;
@@ -51,6 +53,7 @@ use pane::PaneRuntime;
 use pane::SpawnSpec;
 use pane::Terminal;
 use state::AppState;
+use state::no_such_folder;
 
 const OUTPUT_TICK: Duration = Duration::from_millis(16);
 /// Detection runs every this many output ticks (~250ms).
@@ -168,6 +171,9 @@ impl Server {
         let cols = params.cols.unwrap_or(DEFAULT_COLS).max(10);
 
         let mut inner = self.inner.lock().unwrap();
+        if let Some(folder) = params.folder.filter(|&f| !inner.state.has_folder(Some(f))) {
+            return Err(no_such_folder(folder));
+        }
         let id = inner.state.allocate_id();
         let runtime = PaneRuntime::spawn(SpawnSpec {
             id,
@@ -191,6 +197,7 @@ impl Server {
             status: AgentState::Unknown,
             status_since: unix_millis(SystemTime::now()),
             rule: None,
+            folder: params.folder,
         };
         inner.state.insert(info.clone());
         inner.runtimes.insert(id, runtime);
@@ -255,23 +262,69 @@ impl Server {
         Ok(info)
     }
 
-    fn move_pane(&self, params: MoveParams) -> Result<usize> {
+    fn move_pane(&self, params: MoveParams) -> Result<Value> {
         // Reorder the pane in the shared state.
-        let index = self
+        let (folder, index) = {
+            let mut inner = self.inner.lock().unwrap();
+            if let Some(Some(folder)) = params.folder
+                && !inner.state.has_folder(Some(folder))
+            {
+                return Err(no_such_folder(folder));
+            }
+            inner
+                .state
+                .move_to(params.pane, params.folder, params.index)
+                .ok_or_else(|| no_such_pane(params.pane))?
+        };
+
+        // Tell clients to refresh their pane lists.
+        let moved = json!({ "pane": params.pane, "folder": folder, "index": index });
+        self.emit(events::PANE_MOVED, moved.clone());
+
+        Ok(moved)
+    }
+
+    fn create_folder(&self, params: FolderNameParams) -> Result<FolderInfo> {
+        let info = self
             .inner
             .lock()
             .unwrap()
             .state
-            .move_to(params.pane, params.index)
-            .ok_or_else(|| no_such_pane(params.pane))?;
-
-        // Tell clients to refresh their pane lists.
+            .create_folder(&params.name)?;
         self.emit(
-            events::PANE_MOVED,
-            json!({ "pane": params.pane, "index": index }),
+            events::FOLDER_CREATED,
+            json!({ "folder": info.id, "info": info }),
         );
+        Ok(info)
+    }
 
-        Ok(index)
+    fn rename_folder(&self, params: RenameFolderParams) -> Result<FolderInfo> {
+        let info = self
+            .inner
+            .lock()
+            .unwrap()
+            .state
+            .rename_folder(params.folder, &params.name)?;
+        self.emit(
+            events::FOLDER_UPDATED,
+            json!({ "folder": info.id, "info": info }),
+        );
+        Ok(info)
+    }
+
+    /// Deletes a folder, moving its panes to the top level rather than closing them.
+    fn delete_folder(&self, params: FolderParams) -> Result<()> {
+        let moved = self
+            .inner
+            .lock()
+            .unwrap()
+            .state
+            .delete_folder(params.folder)?;
+        self.emit(events::FOLDER_DELETED, json!({ "folder": params.folder }));
+        for pane in moved {
+            self.emit(events::PANE_MOVED, json!({ "pane": pane, "folder": null }));
+        }
+        Ok(())
     }
 
     /// Writes to a pane off the async runtime: a child that stops reading its
@@ -545,7 +598,14 @@ async fn dispatch(server: &Server, method: &str, params: Value) -> Result<Value>
         }
         "pane.resize" => Ok(json!(server.resize_pane(parse(params)?)?)),
         "pane.rename" => Ok(json!(server.rename_pane(parse(params)?)?)),
-        "pane.move" => Ok(json!({ "index": server.move_pane(parse(params)?)? })),
+        "pane.move" => server.move_pane(parse(params)?),
+        "folder.list" => Ok(json!(server.inner.lock().unwrap().state.folders())),
+        "folder.create" => Ok(json!(server.create_folder(parse(params)?)?)),
+        "folder.rename" => Ok(json!(server.rename_folder(parse(params)?)?)),
+        "folder.delete" => {
+            server.delete_folder(parse(params)?)?;
+            Ok(json!({}))
+        }
         "pane.close" => {
             let p: PaneParams = parse(params)?;
             server.close_pane(p.pane)?;
@@ -615,6 +675,7 @@ struct CreateParams {
     name: Option<String>,
     rows: Option<u16>,
     cols: Option<u16>,
+    folder: Option<FolderId>,
 }
 
 #[derive(Deserialize, Default)]
@@ -664,6 +725,36 @@ struct RenameParams {
 struct MoveParams {
     pane: PaneId,
     index: usize,
+
+    /// Absent keeps the pane in its group; `null` is the top level.
+    #[serde(default, deserialize_with = "present")]
+    folder: Option<Option<FolderId>>,
+}
+
+#[derive(Deserialize)]
+struct FolderParams {
+    folder: FolderId,
+}
+
+#[derive(Deserialize)]
+struct FolderNameParams {
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct RenameFolderParams {
+    folder: FolderId,
+    name: String,
+}
+
+/// Wraps a field that is present, even as `null`, in `Some`, so that with
+/// `#[serde(default)]` an absent field is told apart from a `null` one.
+fn present<'de, D, T>(deserializer: D) -> std::result::Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
 }
 
 #[derive(Deserialize)]
@@ -723,5 +814,19 @@ mod tests {
         assert_eq!(last_lines("a\nb\nc\n\n\n", Some(2)), "b\nc");
         assert_eq!(last_lines("a\nb", Some(10)), "a\nb");
         assert_eq!(last_lines("a\n", None), "a\n");
+    }
+
+    #[test]
+    fn move_tells_absent_folder_from_top_level() {
+        let folder = |params| parse::<MoveParams>(params).unwrap().folder;
+        assert_eq!(folder(json!({ "pane": 1, "index": 0 })), None);
+        assert_eq!(
+            folder(json!({ "pane": 1, "index": 0, "folder": null })),
+            Some(None)
+        );
+        assert_eq!(
+            folder(json!({ "pane": 1, "index": 0, "folder": 2 })),
+            Some(Some(2))
+        );
     }
 }

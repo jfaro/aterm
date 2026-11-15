@@ -16,7 +16,15 @@ aterm pane list
 aterm pane read 1 --lines 20
 aterm pane send-text 1 'fix the failing test' --enter
 aterm pane send-keys 1 down enter       # named keys: enter, esc, ctrl-c, alt-left, f5, …
-aterm pane move 3 1                     # move pane 3 to the top of the sidebar
+aterm pane move 3 1                     # move pane 3 to the top of its folder (or the top level)
+
+aterm folder create backend             # prints the folder's id
+aterm pane create --folder 1 -- claude  # start a pane inside folder 1
+aterm pane move 3 1 --folder 1          # move pane 3 to the top of folder 1
+aterm pane move 3 1 --top-level         # … or out of its folder
+aterm folder rename 1 api
+aterm folder delete 1                   # its panes move to the top level
+
 aterm agent wait 1 --status idle --timeout 600
 aterm events                            # stream events as JSON lines
 aterm server stop
@@ -31,26 +39,36 @@ detected agent and then the program name. Renaming pins the name; renaming to
 an empty name (`ctrl-b r`, clear, enter, or `aterm pane rename <id>`) goes
 back to automatic naming.
 
+Folders group panes in the sidebar, below the panes that aren't in one. A
+folder always has a name, and deleting it moves its panes to the top level
+rather than closing them. Folders are one level deep, and like panes they
+live as long as the server.
+
 ### TUI keys
 
 Prefix is `ctrl-b`, followed by:
 
-| key           | action                                 |
-| ------------- | -------------------------------------- |
-| `c`           | new shell pane                         |
-| `a`           | new pane running a typed command       |
-| `n`/`j`/`↓`   | next pane                              |
-| `p`/`k`/`↑`   | previous pane                          |
-| `1`–`9`       | focus pane by position                 |
-| `J`/`shift-↓` | move focused pane down                 |
-| `K`/`shift-↑` | move focused pane up                   |
-| `r`           | rename pane                            |
-| `x`           | close pane                             |
-| `<`/`>`       | shrink/grow sidebar, enter resize mode |
-| `b`           | hide/show sidebar                      |
-| `d`/`q`       | detach (panes keep running)            |
-| `ctrl-b`      | send a literal `ctrl-b`                |
-| `?`           | show all keys (any key closes it)      |
+| key           | action                                              |
+| ------------- | --------------------------------------------------- |
+| `c`           | new shell pane in the current folder                |
+| `a`           | new pane running a typed command, likewise          |
+| `f`           | new folder (asks for its name)                      |
+| `n`/`j`/`↓`   | next pane or folder                                 |
+| `p`/`k`/`↑`   | previous pane or folder                             |
+| `1`–`9`       | focus pane by position                              |
+| `J`/`shift-↓` | move focused pane down, into the next folder at its end |
+| `K`/`shift-↑` | move focused pane up, into the previous folder at its start |
+| `r`           | rename the selected pane or folder                  |
+| `x`           | close the selected pane, or delete the selected folder |
+| `<`/`>`       | shrink/grow sidebar, enter resize mode              |
+| `b`           | hide/show sidebar                                   |
+| `d`/`q`       | detach (panes keep running)                         |
+| `ctrl-b`      | send a literal `ctrl-b`                             |
+| `?`           | show all keys (any key closes it)                   |
+
+The current folder is the selected folder, or else the focused pane's folder.
+Selecting a folder row keeps the last pane on screen, and typing goes back to
+that pane.
 
 In resize mode, `<`/`>`, `h`/`l` or `←`/`→` keep resizing by 2 columns
 (`H`/`L` or `shift-←`/`shift-→` by 8), `=` resets to the default width, and
@@ -85,7 +103,7 @@ and replies look like `{"id": 1, "result": …}` or `{"id": 1, "error": "…"}`.
 | ----------------- | -------------------------------------------- |
 | `server.ping`     |                                              |
 | `server.stop`     |                                              |
-| `pane.create`     | `command?`, `cwd?`, `name?`, `rows?`, `cols?` |
+| `pane.create`     | `command?`, `cwd?`, `name?`, `rows?`, `cols?`, `folder?` |
 | `pane.list`       |                                              |
 | `pane.get`        | `pane`                                       |
 | `pane.read`       | `pane`, `format?: text\|ansi`, `lines?`      |
@@ -93,13 +111,19 @@ and replies look like `{"id": 1, "result": …}` or `{"id": 1, "error": "…"}`.
 | `pane.send_keys`  | `pane`, `keys: [..]`                         |
 | `pane.resize`     | `pane`, `rows`, `cols`                       |
 | `pane.rename`     | `pane`, `name?` (omit or blank to auto-name) |
-| `pane.move`       | `pane`, `index` (0-based, clamped)           |
+| `pane.move`       | `pane`, `index` (0-based within the group, clamped), `folder?` (omit to stay, `null` for the top level) |
 | `pane.close`      | `pane`                                       |
+| `folder.list`     |                                              |
+| `folder.create`   | `name` (not blank)                           |
+| `folder.rename`   | `folder`, `name` (not blank)                 |
+| `folder.delete`   | `folder` (its panes move to the top level)   |
 | `agent.wait`      | `pane`, `status`, `timeout_ms?`              |
 | `events.subscribe`|                                              |
 
 Events (`{"event": …, "data": {"pane": id, …}}`): `pane.created`, `pane.updated`,
 `pane.moved`, `pane.output_changed`, `pane.agent_status_changed`, `pane.exited`, `pane.closed`.
+Folder events carry `{"folder": id, …}`: `folder.created`, `folder.updated`, `folder.deleted`.
+Deleting a folder also sends `pane.moved` for each of its panes.
 
 ### Detection manifests
 

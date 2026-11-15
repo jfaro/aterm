@@ -22,16 +22,18 @@ use tui_term::widget::PseudoTerminal;
 
 use super::view::Areas;
 use super::view::Mode;
+use super::view::Row;
 use super::view::View;
 use super::view::areas;
 use crate::detect::AgentState;
+use crate::protocol::FolderInfo;
 use crate::protocol::PaneInfo;
 use crate::protocol::unix_millis;
 
 /// One-line summary for the status bar. `? help` comes first so it survives truncation on
 /// narrow screens, where [`HELP`] is the full reference.
-const HINTS: &str = " ctrl-b  ? help · c shell · a command · n/p switch · J/K move · r rename · \
-                     x close · </> resize · b sidebar · d detach";
+const HINTS: &str = " ctrl-b  ? help · c shell · a command · f folder · n/p switch · J/K move · \
+                     r rename · x close · </> resize · b sidebar · d detach";
 const RESIZE_HINTS: &str = " resize  ←/→ adjust · shift ±8 · = reset · esc done";
 
 /// Sections of the help popup: a heading, then (keys, action) rows.
@@ -39,15 +41,16 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
     (
         "ctrl-b, then",
         &[
-            ("c", "new shell pane"),
+            ("c", "new shell pane in the current folder"),
             ("a", "new pane running a command"),
-            ("n / j / ↓", "next pane"),
-            ("p / k / ↑", "previous pane"),
+            ("f", "new folder"),
+            ("n / j / ↓", "next pane or folder"),
+            ("p / k / ↑", "previous pane or folder"),
             ("1–9", "focus pane by position"),
-            ("J / shift-↓", "move pane down"),
-            ("K / shift-↑", "move pane up"),
-            ("r", "rename pane"),
-            ("x", "close pane"),
+            ("J / shift-↓", "move pane down, across folders"),
+            ("K / shift-↑", "move pane up, across folders"),
+            ("r", "rename pane or folder"),
+            ("x", "close pane / delete folder (keeps panes)"),
             ("< / >", "resize sidebar"),
             ("b", "hide/show sidebar"),
             ("d / q", "detach"),
@@ -140,27 +143,76 @@ fn render_sidebar(frame: &mut Frame, area: Rect, view: &View, now_ms: u64) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    let selected = view.selected_row();
+    // Pane numbers skip folder rows, matching `ctrl-b 1`–`9`.
+    let mut pane_number = 0;
     let lines: Vec<Line> = view
-        .panes
-        .iter()
-        .enumerate()
-        .map(|(index, pane)| {
-            sidebar_row(
-                index,
-                pane,
-                Some(pane.id) == view.focused,
-                inner.width,
-                now_ms,
-            )
+        .rows()
+        .into_iter()
+        .filter_map(|row| match row {
+            Row::Folder(id) => {
+                let folder = view.folders.iter().find(|folder| folder.id == id)?;
+                let count = view
+                    .panes
+                    .iter()
+                    .filter(|pane| view.group_of(pane) == Some(id))
+                    .count();
+                Some(folder_row(
+                    folder,
+                    count,
+                    selected == Some(row),
+                    inner.width,
+                ))
+            }
+            Row::Pane(id) => {
+                let pane = view.panes.iter().find(|pane| pane.id == id)?;
+                pane_number += 1;
+                Some(sidebar_row(
+                    pane_number,
+                    pane,
+                    PaneRowStyle {
+                        selected: selected == Some(row),
+                        focused: view.focused == Some(id),
+                        indented: view.group_of(pane).is_some(),
+                    },
+                    inner.width,
+                    now_ms,
+                ))
+            }
         })
         .collect();
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-fn sidebar_row(
-    index: usize,
-    pane: &PaneInfo,
+fn folder_row(folder: &FolderInfo, pane_count: usize, selected: bool, width: u16) -> Line<'static> {
+    let marker = if selected { "▌" } else { " " };
+    let count = pane_count.to_string();
+    let name_width = (width as usize).saturating_sub(1 + 2 + 1 + count.len());
+    let name: String = folder.name.chars().take(name_width).collect();
+
+    Line::from(vec![
+        Span::styled(marker, Style::new().cyan()),
+        Span::styled("▾ ", Style::new().dark_gray()),
+        Span::styled(format!("{name:<name_width$} "), Style::new().bold()),
+        Span::styled(count, Style::new().dark_gray()),
+    ])
+}
+
+struct PaneRowStyle {
+    /// The row has the sidebar's selection marker.
+    selected: bool,
+
+    /// The pane is the one on screen.
     focused: bool,
+
+    /// The pane is inside a folder.
+    indented: bool,
+}
+
+fn sidebar_row(
+    number: usize,
+    pane: &PaneInfo,
+    style: PaneRowStyle,
     width: u16,
     now_ms: u64,
 ) -> Line<'static> {
@@ -171,13 +223,14 @@ fn sidebar_row(
             now_ms.saturating_sub(pane.status_since),
         )),
     };
-    let marker = if focused { "▌" } else { " " };
-    let name_width = (width as usize).saturating_sub(4 + 1 + label.len() + 1);
-    let name: String = format!("{} {}", index + 1, pane.name)
+    let marker = if style.selected { "▌" } else { " " };
+    let indent = if style.indented { " " } else { "" };
+    let name_width = (width as usize).saturating_sub(4 + indent.len() + 1 + label.len() + 1);
+    let name: String = format!("{number} {}", pane.name)
         .chars()
         .take(name_width)
         .collect();
-    let row_style = if focused {
+    let row_style = if style.focused {
         Style::new().add_modifier(Modifier::BOLD)
     } else {
         Style::new()
@@ -185,6 +238,7 @@ fn sidebar_row(
 
     Line::from(vec![
         Span::styled(marker, Style::new().cyan()),
+        Span::raw(indent),
         Span::styled(format!("{icon} "), Style::new().fg(color)),
         Span::styled(format!("{name:<name_width$} "), row_style),
         Span::styled(label, Style::new().fg(color)),
@@ -268,6 +322,58 @@ mod tests {
         }
         draw_help(3, 2);
     }
+
+    #[test]
+    fn sidebar_shows_folders_after_top_level_panes() {
+        let pane = |id, folder| PaneInfo {
+            id,
+            name: format!("p{id}"),
+            auto_named: true,
+            command: "sh".into(),
+            cwd: "/".into(),
+            rows: 1,
+            cols: 1,
+            agent: None,
+            status: AgentState::Unknown,
+            status_since: 0,
+            rule: None,
+            folder,
+        };
+        let folder = |id, name: &str| FolderInfo {
+            id,
+            name: name.into(),
+        };
+        let mut view = View::new(super::super::view::Sidebar::default());
+        view.set_panes(
+            vec![pane(1, None), pane(2, Some(10)), pane(3, Some(10))],
+            vec![folder(10, "backend"), folder(20, "frontend")],
+        );
+        view.cycle_focus(1);
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(16, 6)).unwrap();
+        terminal
+            .draw(|frame| render_sidebar(frame, frame.area(), &view, 0))
+            .unwrap();
+        let lines: Vec<String> = terminal
+            .backend()
+            .buffer()
+            .content()
+            .chunks(16)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect())
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                " aterm         │",
+                " ○ 1 p1        │",
+                "▌▾ backend    2│",
+                "  ○ 2 p2       │",
+                "  ○ 3 p3       │",
+                " ▾ frontend   0│",
+            ]
+        );
+    }
 }
 
 fn render_pane(frame: &mut Frame, area: Rect, view: &View) {
@@ -290,7 +396,11 @@ fn render_pane(frame: &mut Frame, area: Rect, view: &View) {
     cursor.hide();
     frame.render_widget(PseudoTerminal::new(screen).cursor(cursor), area);
 
-    if matches!(view.mode, Mode::Normal) && view.scrollback == 0 && !screen.hide_cursor() {
+    if matches!(view.mode, Mode::Normal)
+        && view.scrollback == 0
+        && view.selected_folder.is_none()
+        && !screen.hide_cursor()
+    {
         let (row, col) = screen.cursor_position();
         if row < area.height && col < area.width {
             frame.set_cursor_position(Position::new(area.x + col, area.y + row));
@@ -316,10 +426,14 @@ fn render_status_line(frame: &mut Frame, area: Rect, view: &View) {
                 cursor_x.min(area.right().saturating_sub(1)),
                 area.y,
             ));
-            Line::from(vec![
+            let mut spans = vec![
                 Span::styled(prefix, Style::new().cyan()),
                 Span::raw(input.clone()),
-            ])
+            ];
+            if let Some(message) = &view.message {
+                spans.push(Span::styled(format!("  {message}"), Style::new().red()));
+            }
+            Line::from(spans)
         }
         Mode::Prefix => Line::from(Span::styled(HINTS, Style::new().black().on_cyan())),
         Mode::Help => Line::from(Span::styled(HINTS, Style::new().dark_gray())),
@@ -332,6 +446,16 @@ fn render_status_line(frame: &mut Frame, area: Rect, view: &View) {
         }
         Mode::Normal => match &view.message {
             Some(message) => Line::from(Span::styled(format!(" {message}"), Style::new().red())),
+            None if let Some(folder) = view.selected_folder() => Line::from(vec![
+                Span::styled(
+                    format!(" folder {} ", folder.name),
+                    Style::new().black().on_cyan(),
+                ),
+                Span::styled(
+                    "  ctrl-b r rename · x delete (keeps its panes) · c new pane in it",
+                    Style::new().cyan(),
+                ),
+            ]),
             None if view.scrollback > 0 => Line::from(Span::styled(
                 format!(
                     " scrolled back {} lines · scroll down or type to return",

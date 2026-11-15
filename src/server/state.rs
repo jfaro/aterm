@@ -2,20 +2,41 @@
 
 use std::collections::BTreeMap;
 
+use anyhow::Result;
+use anyhow::anyhow;
+use anyhow::bail;
+
 use crate::detect::Detection;
+use crate::protocol::FolderId;
+use crate::protocol::FolderInfo;
 use crate::protocol::PaneId;
 use crate::protocol::PaneInfo;
 
+/// Every pane id is in exactly one group: `ungrouped`, or the `panes` of the
+/// folder its [`PaneInfo::folder`] names.
 #[derive(Default)]
 pub struct AppState {
     /// The most recently allocated pane id.
     last_id: PaneId,
 
+    /// The most recently allocated folder id.
+    last_folder_id: FolderId,
+
     /// Every live pane, keyed by id.
     panes: BTreeMap<PaneId, PaneInfo>,
 
-    /// The sidebar order, holding exactly the ids in `panes`.
-    order: Vec<PaneId>,
+    /// Top-level panes in sidebar order, shown before every folder.
+    ungrouped: Vec<PaneId>,
+
+    /// Folders in sidebar order.
+    folders: Vec<Folder>,
+}
+
+struct Folder {
+    info: FolderInfo,
+
+    /// The folder's panes in sidebar order.
+    panes: Vec<PaneId>,
 }
 
 impl AppState {
@@ -24,33 +45,55 @@ impl AppState {
         self.last_id
     }
 
-    pub fn insert(&mut self, pane: PaneInfo) {
-        let id = pane.id;
-        if self.panes.insert(id, pane).is_none() {
-            self.order.push(id);
+    /// Adds a pane at the end of the group its `folder` names, or of the top
+    /// level if there is no such folder. Re-inserting a pane keeps its place.
+    pub fn insert(&mut self, mut pane: PaneInfo) {
+        if let Some(old) = self.panes.get(&pane.id) {
+            pane.folder = old.folder;
+        } else {
+            if !self.has_folder(pane.folder) {
+                pane.folder = None;
+            }
+            self.group_mut(pane.folder)
+                .expect("folder was just checked")
+                .push(pane.id);
         }
+        self.panes.insert(pane.id, pane);
     }
 
     pub fn remove(&mut self, id: PaneId) -> Option<PaneInfo> {
         let removed = self.panes.remove(&id)?;
-        self.order.retain(|&other| other != id);
+        if let Some(group) = self.group_mut(removed.folder) {
+            group.retain(|&other| other != id);
+        }
         Some(removed)
     }
 
-    /// Moves a pane to `index` in the sidebar order.
+    /// Moves a pane to `index` within the group `folder` names, or within its
+    /// current group when `folder` is `None`; `Some(None)` is the top level.
     ///
-    /// Note: an `index` past the end moves the pane to the last position.
-    /// Returns the index the pane ended up at, or `None` if there is no such pane.
-    pub fn move_to(&mut self, id: PaneId, index: usize) -> Option<usize> {
-        // Take the pane out of its current position.
-        let from = self.order.iter().position(|&other| other == id)?;
-        self.order.remove(from);
+    /// Note: an `index` past the end moves the pane to the group's last position.
+    /// Returns the group and index the pane ended up at, or `None` if there is
+    /// no such pane or folder.
+    pub fn move_to(
+        &mut self,
+        id: PaneId,
+        folder: Option<Option<FolderId>>,
+        index: usize,
+    ) -> Option<(Option<FolderId>, usize)> {
+        let from = self.panes.get(&id)?.folder;
+        let to = folder.unwrap_or(from);
+        if !self.has_folder(to) {
+            return None;
+        }
 
-        // Put it back at the clamped target position.
-        let to = index.min(self.order.len());
-        self.order.insert(to, id);
+        self.group_mut(from)?.retain(|&other| other != id);
+        let group = self.group_mut(to).expect("folder was just checked");
+        let index = index.min(group.len());
+        group.insert(index, id);
+        self.panes.get_mut(&id)?.folder = to;
 
-        Some(to)
+        Some((to, index))
     }
 
     pub fn get(&self, id: PaneId) -> Option<&PaneInfo> {
@@ -61,12 +104,78 @@ impl AppState {
         self.panes.get_mut(&id)
     }
 
+    /// Every pane in sidebar order: the top level, then each folder in turn.
     pub fn list(&self) -> Vec<PaneInfo> {
-        self.order
+        self.ungrouped
             .iter()
+            .chain(self.folders.iter().flat_map(|folder| &folder.panes))
             .filter_map(|id| self.panes.get(id))
             .cloned()
             .collect()
+    }
+
+    /// Whether `folder` names an existing folder; `None`, the top level, always exists.
+    pub fn has_folder(&self, folder: Option<FolderId>) -> bool {
+        folder.is_none_or(|id| self.folders.iter().any(|f| f.info.id == id))
+    }
+
+    /// Every folder in sidebar order.
+    pub fn folders(&self) -> Vec<FolderInfo> {
+        self.folders.iter().map(|f| f.info.clone()).collect()
+    }
+
+    /// Adds an empty folder after the existing ones.
+    pub fn create_folder(&mut self, name: &str) -> Result<FolderInfo> {
+        let name = folder_name(name)?;
+        self.last_folder_id += 1;
+        let info = FolderInfo {
+            id: self.last_folder_id,
+            name,
+        };
+        self.folders.push(Folder {
+            info: info.clone(),
+            panes: Vec::new(),
+        });
+        Ok(info)
+    }
+
+    pub fn rename_folder(&mut self, id: FolderId, name: &str) -> Result<FolderInfo> {
+        let name = folder_name(name)?;
+        let folder = self.folder_mut(id)?;
+        folder.info.name = name;
+        Ok(folder.info.clone())
+    }
+
+    /// Deletes a folder, moving its panes to the end of the top level.
+    /// Returns the moved panes.
+    pub fn delete_folder(&mut self, id: FolderId) -> Result<Vec<PaneId>> {
+        let index = self
+            .folders
+            .iter()
+            .position(|f| f.info.id == id)
+            .ok_or_else(|| no_such_folder(id))?;
+        let moved = self.folders.remove(index).panes;
+        for pane in &moved {
+            if let Some(info) = self.panes.get_mut(pane) {
+                info.folder = None;
+            }
+        }
+        self.ungrouped.extend(&moved);
+        Ok(moved)
+    }
+
+    fn folder_mut(&mut self, id: FolderId) -> Result<&mut Folder> {
+        self.folders
+            .iter_mut()
+            .find(|f| f.info.id == id)
+            .ok_or_else(|| no_such_folder(id))
+    }
+
+    fn group_mut(&mut self, folder: Option<FolderId>) -> Option<&mut Vec<PaneId>> {
+        match folder {
+            None => Some(&mut self.ungrouped),
+            Some(id) => self.folder_mut(id).ok().map(|f| &mut f.panes),
+        }
     }
 
     /// Gives a pane a user-chosen name, or with `None` hands naming back to
@@ -123,6 +232,19 @@ impl AppState {
     }
 }
 
+pub fn no_such_folder(id: FolderId) -> anyhow::Error {
+    anyhow!("no such folder: {id}")
+}
+
+/// `name` trimmed, rejecting blank names: folders are always named.
+fn folder_name(name: &str) -> Result<String> {
+    let name = name.trim();
+    if name.is_empty() {
+        bail!("folder name can't be empty");
+    }
+    Ok(name.to_owned())
+}
+
 /// Name for a pane the user hasn't named: its window title, else the agent
 /// running in it, else the program it was started with.
 pub fn auto_label(title: &str, agent: Option<&str>, command: &str) -> String {
@@ -168,7 +290,12 @@ mod tests {
             status: AgentState::Unknown,
             status_since: 0,
             rule: None,
+            folder: None,
         }
+    }
+
+    fn ids(state: &AppState) -> Vec<PaneId> {
+        state.list().iter().map(|p| p.id).collect()
     }
 
     #[test]
@@ -187,20 +314,67 @@ mod tests {
             let id = state.allocate_id();
             state.insert(pane(id));
         }
-        let ids = |state: &AppState| state.list().iter().map(|p| p.id).collect::<Vec<_>>();
         assert_eq!(ids(&state), [1, 2, 3]);
 
-        assert_eq!(state.move_to(3, 0), Some(0));
+        assert_eq!(state.move_to(3, None, 0), Some((None, 0)));
         assert_eq!(ids(&state), [3, 1, 2]);
-        assert_eq!(state.move_to(3, 99), Some(2));
+        assert_eq!(state.move_to(3, None, 99), Some((None, 2)));
         assert_eq!(ids(&state), [1, 2, 3]);
-        assert_eq!(state.move_to(42, 0), None);
+        assert_eq!(state.move_to(42, None, 0), None);
 
         state.remove(2);
         assert_eq!(ids(&state), [1, 3]);
         let id = state.allocate_id();
         state.insert(pane(id));
         assert_eq!(ids(&state), [1, 3, 4]);
+    }
+
+    #[test]
+    fn folders_group_panes_after_the_top_level() {
+        let mut state = AppState::default();
+        let a = state.create_folder(" a ").unwrap();
+        let b = state.create_folder("b").unwrap();
+        assert_eq!(a.name, "a");
+        for folder in [Some(b.id), None, Some(a.id), Some(99)] {
+            let id = state.allocate_id();
+            state.insert(PaneInfo { folder, ..pane(id) });
+        }
+        // Pane 4 named a missing folder, so it lands at the top level.
+        assert_eq!(ids(&state), [2, 4, 3, 1]);
+        assert_eq!(state.get(4).unwrap().folder, None);
+
+        assert_eq!(state.move_to(2, Some(Some(b.id)), 0), Some((Some(b.id), 0)));
+        assert_eq!(ids(&state), [4, 3, 2, 1]);
+        assert_eq!(state.get(2).unwrap().folder, Some(b.id));
+        assert_eq!(state.move_to(2, Some(Some(99)), 0), None);
+        assert_eq!(state.get(2).unwrap().folder, Some(b.id));
+
+        // Moving within a folder stays in it.
+        assert_eq!(state.move_to(2, None, 9), Some((Some(b.id), 1)));
+        assert_eq!(ids(&state), [4, 3, 1, 2]);
+
+        state.remove(3);
+        assert_eq!(ids(&state), [4, 1, 2]);
+        assert_eq!(state.delete_folder(b.id).unwrap(), [1, 2]);
+        assert_eq!(ids(&state), [4, 1, 2]);
+        assert!(state.list().iter().all(|p| p.folder.is_none()));
+        assert_eq!(state.folders(), [a]);
+        assert!(state.delete_folder(b.id).is_err());
+    }
+
+    #[test]
+    fn folders_always_have_a_name() {
+        let mut state = AppState::default();
+        assert!(state.create_folder("  ").is_err());
+        let folder = state.create_folder("a").unwrap();
+        assert!(state.rename_folder(folder.id, "").is_err());
+        assert_eq!(state.rename_folder(folder.id, "b").unwrap().name, "b");
+        assert!(state.rename_folder(99, "c").is_err());
+        assert_eq!(state.folders()[0].name, "b");
+
+        // Ids are never reused.
+        state.delete_folder(folder.id).unwrap();
+        assert_ne!(state.create_folder("c").unwrap().id, folder.id);
     }
 
     #[test]

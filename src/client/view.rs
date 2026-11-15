@@ -4,6 +4,8 @@ use ratatui::layout::Constraint;
 use ratatui::layout::Layout;
 use ratatui::layout::Rect;
 
+use crate::protocol::FolderId;
+use crate::protocol::FolderInfo;
 use crate::protocol::PaneId;
 use crate::protocol::PaneInfo;
 
@@ -34,6 +36,8 @@ pub enum Mode {
 pub enum PromptKind {
     NewPane,
     Rename,
+    NewFolder,
+    RenameFolder(FolderId),
 }
 
 impl PromptKind {
@@ -41,6 +45,8 @@ impl PromptKind {
         match self {
             Self::NewPane => "command",
             Self::Rename => "rename",
+            Self::NewFolder => "folder name",
+            Self::RenameFolder(_) => "rename folder",
         }
     }
 }
@@ -98,8 +104,14 @@ pub struct View {
     /// Panes in sidebar order, as last fetched from the server.
     pub panes: Vec<PaneInfo>,
 
+    /// Folders in sidebar order, as last fetched from the server.
+    pub folders: Vec<FolderInfo>,
+
     /// Pane shown and receiving keys.
     pub focused: Option<PaneId>,
+
+    /// Folder whose sidebar row is selected; while `None`, the focused pane's row is.
+    pub selected_folder: Option<FolderId>,
 
     /// Local mirror of the focused pane's screen.
     pub screen: vt100::Parser,
@@ -127,7 +139,9 @@ impl View {
     pub fn new(sidebar: Sidebar) -> Self {
         Self {
             panes: Vec::new(),
+            folders: Vec::new(),
             focused: None,
+            selected_folder: None,
             screen: vt100::Parser::new(1, 1, 0),
             screen_pane: None,
             scrollback: 0,
@@ -142,38 +156,135 @@ impl View {
         self.panes.iter().find(|pane| Some(pane.id) == self.focused)
     }
 
-    /// Replaces the pane list, keeping focus on the same pane when it still
-    /// exists. Returns true if focus moved.
-    pub fn set_panes(&mut self, panes: Vec<PaneInfo>) -> bool {
+    pub fn selected_folder(&self) -> Option<&FolderInfo> {
+        self.folders
+            .iter()
+            .find(|folder| Some(folder.id) == self.selected_folder)
+    }
+
+    /// Replaces the pane and folder lists, keeping focus on the same pane and
+    /// the selection on the same folder when they still exist. Returns true if
+    /// focus moved.
+    pub fn set_panes(&mut self, panes: Vec<PaneInfo>, folders: Vec<FolderInfo>) -> bool {
         let previous = self.focused;
         let still_there = previous.is_some_and(|id| panes.iter().any(|p| p.id == id));
         if !still_there {
             self.focused = panes.first().map(|p| p.id);
         }
         self.panes = panes;
+        self.folders = folders;
+        if self.selected_folder().is_none() {
+            self.selected_folder = None;
+        }
         self.focused != previous
     }
 
-    pub fn focused_index(&self) -> Option<usize> {
-        self.panes.iter().position(|p| Some(p.id) == self.focused)
+    /// The group `pane` is shown in: its folder, or the top level if that
+    /// folder isn't in the folder list (yet).
+    pub fn group_of(&self, pane: &PaneInfo) -> Option<FolderId> {
+        pane.folder
+            .filter(|&id| self.folders.iter().any(|folder| folder.id == id))
     }
 
-    /// Moves focus by `delta` positions, wrapping around.
+    /// Ids of the panes shown in `group`, in order.
+    fn group(&self, group: Option<FolderId>) -> Vec<PaneId> {
+        self.panes
+            .iter()
+            .filter(|pane| self.group_of(pane) == group)
+            .map(|pane| pane.id)
+            .collect()
+    }
+
+    /// Sidebar rows in order: top-level panes, then each folder followed by its panes.
+    pub fn rows(&self) -> Vec<Row> {
+        let mut rows: Vec<Row> = self.group(None).into_iter().map(Row::Pane).collect();
+        for folder in &self.folders {
+            rows.push(Row::Folder(folder.id));
+            rows.extend(self.group(Some(folder.id)).into_iter().map(Row::Pane));
+        }
+        rows
+    }
+
+    /// The highlighted sidebar row: the selected folder, else the focused pane.
+    pub fn selected_row(&self) -> Option<Row> {
+        self.selected_folder
+            .map(Row::Folder)
+            .or(self.focused.map(Row::Pane))
+    }
+
+    /// Moves the selection by `delta` rows, wrapping around. Landing on a pane
+    /// focuses it; landing on a folder keeps the focused pane on screen.
     pub fn cycle_focus(&mut self, delta: isize) {
-        if self.panes.is_empty() {
+        let rows = self.rows();
+        if rows.is_empty() {
             return;
         }
-        let len = self.panes.len() as isize;
-        let current = self.focused_index().unwrap_or(0) as isize;
-        let next = (current + delta).rem_euclid(len) as usize;
-        self.focused = Some(self.panes[next].id);
+        let current = self
+            .selected_row()
+            .and_then(|row| rows.iter().position(|&other| other == row))
+            .unwrap_or(0) as isize;
+        let next = (current + delta).rem_euclid(rows.len() as isize) as usize;
+        self.select(rows[next]);
     }
 
+    /// Focuses the `index`th pane in sidebar order, skipping folder rows.
     pub fn focus_index(&mut self, index: usize) {
-        if let Some(pane) = self.panes.get(index) {
-            self.focused = Some(pane.id);
+        let pane = self
+            .rows()
+            .into_iter()
+            .filter(|row| matches!(row, Row::Pane(_)))
+            .nth(index);
+        if let Some(row) = pane {
+            self.select(row);
         }
     }
+
+    fn select(&mut self, row: Row) {
+        match row {
+            Row::Folder(id) => self.selected_folder = Some(id),
+            Row::Pane(id) => {
+                self.selected_folder = None;
+                self.focused = Some(id);
+            }
+        }
+    }
+
+    /// Folder new panes join: the selected one, else the focused pane's.
+    pub fn current_folder(&self) -> Option<FolderId> {
+        self.selected_folder
+            .or_else(|| self.focused_pane().and_then(|pane| self.group_of(pane)))
+    }
+
+    /// Where shifting the focused pane `delta` (±1) places puts it, as a group
+    /// and an index within that group. Past either end of its group, the pane
+    /// moves into the neighboring group: to the start of the next one going
+    /// down, the end of the previous one going up. `None` at the very ends.
+    pub fn move_target(&self, delta: isize) -> Option<(Option<FolderId>, usize)> {
+        let pane = self.focused_pane()?;
+        let group = self.group_of(pane);
+        let members = self.group(group);
+        let index = members.iter().position(|&id| id == pane.id)?;
+        if let Some(target) = index.checked_add_signed(delta)
+            && target < members.len()
+        {
+            return Some((group, target));
+        }
+
+        let groups: Vec<Option<FolderId>> = std::iter::once(None)
+            .chain(self.folders.iter().map(|folder| Some(folder.id)))
+            .collect();
+        let position = groups.iter().position(|&other| other == group)?;
+        let next = *groups.get(position.checked_add_signed(delta.signum())?)?;
+        let index = if delta > 0 { 0 } else { self.group(next).len() };
+        Some((next, index))
+    }
+}
+
+/// One line of the sidebar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Row {
+    Folder(FolderId),
+    Pane(PaneId),
 }
 
 pub struct Areas {
@@ -216,33 +327,126 @@ mod tests {
             status: AgentState::Unknown,
             status_since: 0,
             rule: None,
+            folder: None,
         }
     }
 
     #[test]
     fn focus_survives_list_refresh_and_falls_back() {
         let mut view = View::new(Sidebar::default());
-        assert!(view.set_panes(vec![pane(1), pane(2)]));
+        assert!(view.set_panes(vec![pane(1), pane(2)], vec![]));
         assert_eq!(view.focused, Some(1));
 
         view.focused = Some(2);
-        assert!(!view.set_panes(vec![pane(1), pane(2), pane(3)]));
+        assert!(!view.set_panes(vec![pane(1), pane(2), pane(3)], vec![]));
         assert_eq!(view.focused, Some(2));
 
-        assert!(view.set_panes(vec![pane(3)]));
+        assert!(view.set_panes(vec![pane(3)], vec![]));
         assert_eq!(view.focused, Some(3));
-        assert!(view.set_panes(vec![]));
+        assert!(view.set_panes(vec![], vec![]));
         assert_eq!(view.focused, None);
     }
 
     #[test]
     fn focus_cycles_with_wraparound() {
         let mut view = View::new(Sidebar::default());
-        view.set_panes(vec![pane(1), pane(2), pane(3)]);
+        view.set_panes(vec![pane(1), pane(2), pane(3)], vec![]);
         view.cycle_focus(-1);
         assert_eq!(view.focused, Some(3));
         view.cycle_focus(2);
         assert_eq!(view.focused, Some(2));
+    }
+
+    fn folder(id: FolderId) -> FolderInfo {
+        FolderInfo {
+            id,
+            name: format!("f{id}"),
+        }
+    }
+
+    fn in_folder(id: PaneId, folder: FolderId) -> PaneInfo {
+        PaneInfo {
+            folder: Some(folder),
+            ..pane(id)
+        }
+    }
+
+    /// Top-level pane 1, folder 10 holding panes 2 and 3, and empty folder 20.
+    fn foldered_view() -> View {
+        let mut view = View::new(Sidebar::default());
+        view.set_panes(
+            vec![pane(1), in_folder(2, 10), in_folder(3, 10)],
+            vec![folder(10), folder(20)],
+        );
+        view
+    }
+
+    #[test]
+    fn rows_put_folders_after_top_level_panes() {
+        let mut view = foldered_view();
+        assert_eq!(
+            view.rows(),
+            [
+                Row::Pane(1),
+                Row::Folder(10),
+                Row::Pane(2),
+                Row::Pane(3),
+                Row::Folder(20)
+            ]
+        );
+
+        // A pane naming a folder not listed yet shows at the top level.
+        view.set_panes(vec![pane(1), in_folder(2, 99)], vec![]);
+        assert_eq!(view.rows(), [Row::Pane(1), Row::Pane(2)]);
+    }
+
+    #[test]
+    fn selection_stops_on_folders_and_keeps_the_pane_shown() {
+        let mut view = foldered_view();
+        view.cycle_focus(1);
+        assert_eq!(view.selected_row(), Some(Row::Folder(10)));
+        assert_eq!(view.focused, Some(1));
+        assert_eq!(view.current_folder(), Some(10));
+
+        view.cycle_focus(1);
+        assert_eq!(view.selected_row(), Some(Row::Pane(2)));
+        assert_eq!(view.current_folder(), Some(10));
+
+        view.cycle_focus(-3);
+        assert_eq!(view.selected_row(), Some(Row::Folder(20)));
+        assert_eq!(view.focused, Some(2));
+
+        // Pane numbers skip folder rows.
+        view.focus_index(2);
+        assert_eq!(view.selected_row(), Some(Row::Pane(3)));
+
+        // A deleted folder drops its selection.
+        view.cycle_focus(1);
+        assert_eq!(view.selected_row(), Some(Row::Folder(20)));
+        view.set_panes(view.panes.clone(), vec![folder(10)]);
+        assert_eq!(view.selected_row(), Some(Row::Pane(3)));
+    }
+
+    #[test]
+    fn moves_cross_into_neighboring_folders() {
+        let mut view = foldered_view();
+        view.focused = Some(1);
+        assert_eq!(view.move_target(-1), None);
+        assert_eq!(view.move_target(1), Some((Some(10), 0)));
+
+        view.focused = Some(2);
+        assert_eq!(view.move_target(-1), Some((None, 1)));
+        assert_eq!(view.move_target(1), Some((Some(10), 1)));
+
+        view.focused = Some(3);
+        assert_eq!(view.move_target(1), Some((Some(20), 0)));
+
+        view.set_panes(
+            vec![pane(1), in_folder(3, 20)],
+            vec![folder(10), folder(20)],
+        );
+        assert_eq!(view.move_target(-1), Some((Some(10), 0)));
+        assert_eq!(view.move_target(1), None);
     }
 
     #[test]

@@ -14,6 +14,7 @@ use serde_json::Value;
 use crate::detect::AgentState;
 
 pub type PaneId = u32;
+pub type FolderId = u32;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Request {
@@ -82,6 +83,20 @@ pub struct PaneInfo {
 
     /// Id of the detection rule that produced `status`, for debugging manifests.
     pub rule: Option<String>,
+
+    /// Sidebar folder holding the pane, or `None` at the top level.
+    #[serde(default)]
+    pub folder: Option<FolderId>,
+}
+
+/// A named sidebar folder grouping panes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FolderInfo {
+    /// Unique for the server's lifetime; never reused.
+    pub id: FolderId,
+
+    /// Display name, never blank.
+    pub name: String,
 }
 
 /// Milliseconds since the Unix epoch, saturating at zero for pre-epoch clocks.
@@ -98,6 +113,9 @@ pub mod events {
     pub const PANE_AGENT_STATUS_CHANGED: &str = "pane.agent_status_changed";
     pub const PANE_EXITED: &str = "pane.exited";
     pub const PANE_CLOSED: &str = "pane.closed";
+    pub const FOLDER_CREATED: &str = "folder.created";
+    pub const FOLDER_UPDATED: &str = "folder.updated";
+    pub const FOLDER_DELETED: &str = "folder.deleted";
 }
 
 #[cfg(test)]

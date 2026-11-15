@@ -30,6 +30,7 @@ use serde_json::json;
 use tokio::sync::mpsc;
 
 use crate::protocol::Event;
+use crate::protocol::FolderInfo;
 use crate::protocol::PaneId;
 use crate::protocol::PaneInfo;
 use crate::protocol::events;
@@ -258,13 +259,21 @@ impl App {
                     input: String::new(),
                 };
             }
+            KeyCode::Char('f') => {
+                self.view.mode = Mode::Prompt {
+                    kind: PromptKind::NewFolder,
+                    input: String::new(),
+                };
+            }
             KeyCode::Char('r') => {
-                if let Some(pane) = self.view.focused_pane() {
-                    let input = pane.name.clone();
-                    self.view.mode = Mode::Prompt {
-                        kind: PromptKind::Rename,
-                        input,
-                    };
+                let prompt = match (self.view.selected_folder(), self.view.focused_pane()) {
+                    (Some(folder), _) => Some((PromptKind::RenameFolder(folder.id), &folder.name)),
+                    (None, Some(pane)) => Some((PromptKind::Rename, &pane.name)),
+                    (None, None) => None,
+                };
+                if let Some((kind, name)) = prompt {
+                    let input = name.clone();
+                    self.view.mode = Mode::Prompt { kind, input };
                 }
             }
             KeyCode::Char('J') => self.move_focused(1).await,
@@ -285,12 +294,18 @@ impl App {
                 let index = digit as usize - '1' as usize;
                 self.change_focus(|view| view.focus_index(index));
             }
-            KeyCode::Char('x') => {
-                if let Some(pane) = self.view.focused {
-                    self.call_reporting_errors("pane.close", json!({ "pane": pane }))
-                        .await;
+            // Deleting a folder moves its panes to the top level; it never closes them.
+            KeyCode::Char('x') => match (self.view.selected_folder, self.view.focused) {
+                (Some(folder), _) => {
+                    self.call_reporting_errors("folder.delete", json!({ "folder": folder }))
+                        .await
                 }
-            }
+                (None, Some(pane)) => {
+                    self.call_reporting_errors("pane.close", json!({ "pane": pane }))
+                        .await
+                }
+                (None, None) => {}
+            },
             KeyCode::Char('<') => self.start_resizing(-RESIZE_STEP),
             KeyCode::Char('>') => self.start_resizing(RESIZE_STEP),
             KeyCode::Char('b') => {
@@ -350,6 +365,22 @@ impl App {
         let input = input.trim().to_owned();
         match kind {
             PromptKind::NewPane if !input.is_empty() => self.create_pane(Some(input)).await,
+            // Folders are always named, so an empty name keeps the prompt open.
+            PromptKind::NewFolder | PromptKind::RenameFolder(_) if input.is_empty() => {
+                self.view.message = Some("a folder needs a name".into());
+                self.view.mode = Mode::Prompt { kind, input };
+            }
+            PromptKind::NewFolder => {
+                self.call_reporting_errors("folder.create", json!({ "name": input }))
+                    .await
+            }
+            PromptKind::RenameFolder(folder) => {
+                self.call_reporting_errors(
+                    "folder.rename",
+                    json!({ "folder": folder, "name": input }),
+                )
+                .await
+            }
             // An empty name hands naming back to the server's auto-labeling.
             PromptKind::Rename => {
                 if let Some(pane) = self.view.focused {
@@ -372,23 +403,24 @@ impl App {
         }
     }
 
-    /// Shifts the focused pane `delta` places in the sidebar, stopping at either end.
+    /// Shifts the focused pane one place up (`delta` -1) or down (+1), crossing into the
+    /// neighboring folder at either end of its own and stopping at either end of the sidebar.
+    /// Does nothing while a folder row is selected.
     async fn move_focused(&mut self, delta: isize) {
-        let (Some(pane), Some(current)) = (self.view.focused, self.view.focused_index()) else {
-            return;
-        };
-
-        // Stop at either end of the sidebar.
-        let Some(index) = current.checked_add_signed(delta) else {
-            return;
-        };
-        if index >= self.view.panes.len() {
+        if self.view.selected_folder.is_some() {
             return;
         }
+        let (Some(pane), Some((folder, index))) = (self.view.focused, self.view.move_target(delta))
+        else {
+            return;
+        };
 
         // The server's `pane.moved` event triggers the list refresh.
-        self.call_reporting_errors("pane.move", json!({ "pane": pane, "index": index }))
-            .await;
+        self.call_reporting_errors(
+            "pane.move",
+            json!({ "pane": pane, "folder": folder, "index": index }),
+        )
+        .await;
     }
 
     async fn create_pane(&mut self, command: Option<String>) {
@@ -397,10 +429,12 @@ impl App {
             "cwd": std::env::current_dir().ok(),
             "rows": self.pane_area.height,
             "cols": self.pane_area.width,
+            "folder": self.view.current_folder(),
         });
         match self.conn.call_as::<PaneInfo>("pane.create", params).await {
             Ok(info) => {
                 self.view.focused = Some(info.id);
+                self.view.selected_folder = None;
                 self.list_dirty = true;
                 self.screen_dirty = true;
             }
@@ -412,6 +446,8 @@ impl App {
         let Some(pane) = self.view.focused else {
             return;
         };
+        // Input goes to the pane on screen, so the sidebar follows it there.
+        self.view.selected_folder = None;
         // Typing returns a scrolled-back view to the live screen.
         if self.view.scrollback > 0 {
             self.view.scrollback = 0;
@@ -445,7 +481,8 @@ impl App {
                 )
                 .await;
         }
-        if self.view.set_panes(panes) {
+        let folders: Vec<FolderInfo> = self.conn.call_as("folder.list", json!({})).await?;
+        if self.view.set_panes(panes, folders) {
             self.screen_dirty = true;
         }
         Ok(())

@@ -9,6 +9,8 @@ use serde_json::Value;
 use serde_json::json;
 
 use crate::detect::AgentState;
+use crate::protocol::FolderId;
+use crate::protocol::FolderInfo;
 use crate::protocol::PaneId;
 use crate::protocol::PaneInfo;
 use crate::rpc::Connection;
@@ -26,6 +28,12 @@ pub enum Command {
     Pane {
         #[command(subcommand)]
         action: PaneAction,
+    },
+
+    /// Create and manage the sidebar folders that group panes.
+    Folder {
+        #[command(subcommand)]
+        action: FolderAction,
     },
 
     /// Wait on agent status.
@@ -55,6 +63,10 @@ pub enum PaneAction {
         /// Working directory; defaults to the current one.
         #[arg(long)]
         cwd: Option<PathBuf>,
+
+        /// Folder to put the pane in; defaults to the top level.
+        #[arg(long)]
+        folder: Option<FolderId>,
 
         /// Command line to run, e.g. `claude --resume`.
         #[arg(trailing_var_arg = true)]
@@ -119,15 +131,54 @@ pub enum PaneAction {
         /// Pane to move.
         pane: PaneId,
 
-        /// New position, counting from 1 as the sidebar does.
+        /// New position within the pane's folder (or the top level), counting from 1.
         #[arg(value_parser = clap::value_parser!(u32).range(1..))]
         position: u32,
+
+        /// Move the pane into this folder first.
+        #[arg(long, conflicts_with = "top_level")]
+        folder: Option<FolderId>,
+
+        /// Move the pane out of its folder to the top level first.
+        #[arg(long)]
+        top_level: bool,
     },
 
     /// Kill a pane's process and remove it.
     Close {
         /// Pane to close.
         pane: PaneId,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum FolderAction {
+    /// Create an empty folder, printing its id.
+    Create {
+        /// Name shown in the sidebar.
+        name: String,
+    },
+
+    /// List folders.
+    List {
+        /// Print folders as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Rename a folder.
+    Rename {
+        /// Folder to rename.
+        folder: FolderId,
+
+        /// New name.
+        name: String,
+    },
+
+    /// Delete a folder, moving its panes to the top level.
+    Delete {
+        /// Folder to delete.
+        folder: FolderId,
     },
 }
 
@@ -162,6 +213,10 @@ pub async fn run(command: Command) -> Result<()> {
             let (conn, _) = Connection::connect_or_spawn().await?;
             pane(&conn, action).await
         }
+        Command::Folder { action } => {
+            let (conn, _) = Connection::connect_or_spawn().await?;
+            folder(&conn, action).await
+        }
         Command::Agent {
             action:
                 AgentAction::Wait {
@@ -194,7 +249,12 @@ pub async fn run(command: Command) -> Result<()> {
 
 async fn pane(conn: &Arc<Connection>, action: PaneAction) -> Result<()> {
     match action {
-        PaneAction::Create { name, cwd, command } => {
+        PaneAction::Create {
+            name,
+            cwd,
+            folder,
+            command,
+        } => {
             let cwd = match cwd {
                 Some(dir) => Some(std::fs::canonicalize(dir)?),
                 None => std::env::current_dir().ok(),
@@ -203,7 +263,7 @@ async fn pane(conn: &Arc<Connection>, action: PaneAction) -> Result<()> {
             let info: PaneInfo = conn
                 .call_as(
                     "pane.create",
-                    json!({ "command": command, "cwd": cwd, "name": name }),
+                    json!({ "command": command, "cwd": cwd, "name": name, "folder": folder }),
                 )
                 .await?;
             println!("{}", info.id);
@@ -246,10 +306,18 @@ async fn pane(conn: &Arc<Connection>, action: PaneAction) -> Result<()> {
             conn.call("pane.rename", json!({ "pane": pane, "name": name }))
                 .await?;
         }
-        PaneAction::Move { pane, position } => {
-            let index = position as usize - 1;
-            conn.call("pane.move", json!({ "pane": pane, "index": index }))
-                .await?;
+        PaneAction::Move {
+            pane,
+            position,
+            folder,
+            top_level,
+        } => {
+            let mut params = json!({ "pane": pane, "index": position as usize - 1 });
+            // An absent `folder` keeps the pane in its group; `null` is the top level.
+            if folder.is_some() || top_level {
+                params["folder"] = json!(folder);
+            }
+            conn.call("pane.move", params).await?;
         }
         PaneAction::Close { pane } => {
             conn.call("pane.close", json!({ "pane": pane })).await?;
@@ -258,17 +326,52 @@ async fn pane(conn: &Arc<Connection>, action: PaneAction) -> Result<()> {
     Ok(())
 }
 
+async fn folder(conn: &Arc<Connection>, action: FolderAction) -> Result<()> {
+    match action {
+        FolderAction::Create { name } => {
+            let info: FolderInfo = conn
+                .call_as("folder.create", json!({ "name": name }))
+                .await?;
+            println!("{}", info.id);
+        }
+        FolderAction::List { json } => {
+            let folders: Vec<FolderInfo> = conn.call_as("folder.list", json!({})).await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&folders)?);
+            } else {
+                println!("{:<4} NAME", "ID");
+                for folder in folders {
+                    println!("{:<4} {}", folder.id, folder.name);
+                }
+            }
+        }
+        FolderAction::Rename { folder, name } => {
+            conn.call("folder.rename", json!({ "folder": folder, "name": name }))
+                .await?;
+        }
+        FolderAction::Delete { folder } => {
+            conn.call("folder.delete", json!({ "folder": folder }))
+                .await?;
+        }
+    }
+    Ok(())
+}
+
 fn print_pane_table(panes: &[PaneInfo]) {
     println!(
-        "{:<4} {:<16} {:<8} {:<8} COMMAND",
-        "ID", "NAME", "AGENT", "STATUS"
+        "{:<4} {:<16} {:<6} {:<8} {:<8} COMMAND",
+        "ID", "NAME", "FOLDER", "AGENT", "STATUS"
     );
     for pane in panes {
         let status = serde_json::to_value(pane.status).ok();
+        let folder = pane
+            .folder
+            .map_or_else(|| "-".to_owned(), |id| id.to_string());
         println!(
-            "{:<4} {:<16} {:<8} {:<8} {}",
+            "{:<4} {:<16} {:<6} {:<8} {:<8} {}",
             pane.id,
             pane.name,
+            folder,
             pane.agent.as_deref().unwrap_or("-"),
             status.as_ref().and_then(Value::as_str).unwrap_or("?"),
             pane.command,
