@@ -128,6 +128,7 @@ mod tests {
         PaneInfo {
             id,
             name: format!("p{id}"),
+            auto_named: true,
             command: "sh".into(),
             cwd: "/".into(),
             rows: 1,

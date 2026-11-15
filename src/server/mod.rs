@@ -177,12 +177,13 @@ impl Server {
             cols,
             socket: self.socket.clone(),
         })?;
+        let command = command.unwrap_or_else(|| "shell".into());
+        let name = params.name.filter(|name| !name.trim().is_empty());
         let info = PaneInfo {
             id,
-            name: params
-                .name
-                .unwrap_or_else(|| default_pane_name(command.as_deref())),
-            command: command.unwrap_or_else(|| "shell".into()),
+            auto_named: name.is_none(),
+            name: name.unwrap_or_else(|| state::program_name(&command)),
+            command,
             cwd: cwd.display().to_string(),
             rows,
             cols,
@@ -232,14 +233,20 @@ impl Server {
         Ok(info)
     }
 
+    /// Renames a pane; a missing or blank name returns it to automatic naming.
     fn rename_pane(&self, params: RenameParams) -> Result<PaneInfo> {
+        let name = params.name.filter(|name| !name.trim().is_empty());
         let mut inner = self.inner.lock().unwrap();
+        let title = inner
+            .runtimes
+            .get(&params.pane)
+            .map(|runtime| runtime.terminal.title())
+            .unwrap_or_default();
         let info = inner
             .state
-            .get_mut(params.pane)
-            .ok_or_else(|| no_such_pane(params.pane))?;
-        info.name = params.name;
-        let info = info.clone();
+            .rename(params.pane, name, &title)
+            .ok_or_else(|| no_such_pane(params.pane))?
+            .clone();
         drop(inner);
         self.emit(
             events::PANE_UPDATED,
@@ -351,21 +358,31 @@ impl Server {
                 },
             };
             let agent = manifest.map(|m| m.id.clone());
+            let title = terminal.title();
 
-            let changed = {
+            let (status_changed, renamed) = {
                 let mut inner = self.inner.lock().unwrap();
-                inner.state.apply_detection(
+                let status_changed = inner.state.apply_detection(
                     id,
                     agent.clone(),
                     detection.clone(),
                     unix_millis(SystemTime::now()),
-                )
+                );
+                let renamed = inner
+                    .state
+                    .refresh_auto_name(id, &title)
+                    .then(|| inner.state.get(id).cloned())
+                    .flatten();
+                (status_changed, renamed)
             };
-            if changed {
+            if status_changed {
                 self.emit(
                     events::PANE_AGENT_STATUS_CHANGED,
                     json!({ "pane": id, "agent": agent, "status": detection.state }),
                 );
+            }
+            if let Some(info) = renamed {
+                self.emit(events::PANE_UPDATED, json!({ "pane": id, "info": info }));
             }
         }
     }
@@ -631,7 +648,7 @@ struct ResizeParams {
 #[derive(Deserialize)]
 struct RenameParams {
     pane: PaneId,
-    name: String,
+    name: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -679,13 +696,6 @@ fn no_such_pane(id: PaneId) -> anyhow::Error {
     anyhow!("no such pane: {id}")
 }
 
-fn default_pane_name(command: Option<&str>) -> String {
-    command
-        .and_then(|c| c.split_whitespace().next())
-        .map(|program| program.rsplit('/').next().unwrap_or(program).to_owned())
-        .unwrap_or_else(|| "shell".into())
-}
-
 /// The last `count` lines of `text`, ignoring trailing blank lines.
 fn last_lines(text: &str, count: Option<usize>) -> String {
     let Some(count) = count else {
@@ -698,15 +708,6 @@ fn last_lines(text: &str, count: Option<usize>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn pane_names_default_to_program_basename() {
-        assert_eq!(
-            default_pane_name(Some("/opt/bin/claude --resume")),
-            "claude"
-        );
-        assert_eq!(default_pane_name(None), "shell");
-    }
 
     #[test]
     fn last_lines_ignores_trailing_blank_lines() {

@@ -51,8 +51,13 @@ pub struct PaneInfo {
     /// Unique for the server's lifetime; never reused.
     pub id: PaneId,
 
-    /// Display name, set by the user or derived from the command.
+    /// Display name: chosen by the user, or derived automatically while
+    /// `auto_named` is set.
     pub name: String,
+
+    /// True while `name` tracks the pane's window title, agent or command;
+    /// false once the user has named the pane.
+    pub auto_named: bool,
 
     /// Command line the pane was started with, or `shell`.
     pub command: String,

@@ -216,7 +216,8 @@ impl App {
         let input = input.trim().to_owned();
         match kind {
             PromptKind::NewPane if !input.is_empty() => self.create_pane(Some(input)).await,
-            PromptKind::Rename if !input.is_empty() => {
+            // An empty name hands naming back to the server's auto-labeling.
+            PromptKind::Rename => {
                 if let Some(pane) = self.view.focused {
                     self.call_reporting_errors(
                         "pane.rename",
