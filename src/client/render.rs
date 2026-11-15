@@ -22,7 +22,8 @@ use super::view::areas;
 use crate::detect::AgentState;
 use crate::protocol::PaneInfo;
 
-const HINTS: &str = " ctrl-b  c shell · a command · n/p switch · r rename · x close · d detach";
+const HINTS: &str =
+    " ctrl-b  c shell · a command · n/p switch · J/K move · r rename · x close · d detach";
 
 pub fn render(frame: &mut Frame, view: &View) {
     let Areas {

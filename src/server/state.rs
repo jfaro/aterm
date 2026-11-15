@@ -8,8 +8,14 @@ use crate::protocol::PaneInfo;
 
 #[derive(Default)]
 pub struct AppState {
+    /// The most recently allocated pane id.
     last_id: PaneId,
+
+    /// Every live pane, keyed by id.
     panes: BTreeMap<PaneId, PaneInfo>,
+
+    /// The sidebar order, holding exactly the ids in `panes`.
+    order: Vec<PaneId>,
 }
 
 impl AppState {
@@ -19,11 +25,32 @@ impl AppState {
     }
 
     pub fn insert(&mut self, pane: PaneInfo) {
-        self.panes.insert(pane.id, pane);
+        let id = pane.id;
+        if self.panes.insert(id, pane).is_none() {
+            self.order.push(id);
+        }
     }
 
     pub fn remove(&mut self, id: PaneId) -> Option<PaneInfo> {
-        self.panes.remove(&id)
+        let removed = self.panes.remove(&id)?;
+        self.order.retain(|&other| other != id);
+        Some(removed)
+    }
+
+    /// Moves a pane to `index` in the sidebar order.
+    ///
+    /// Note: an `index` past the end moves the pane to the last position.
+    /// Returns the index the pane ended up at, or `None` if there is no such pane.
+    pub fn move_to(&mut self, id: PaneId, index: usize) -> Option<usize> {
+        // Take the pane out of its current position.
+        let from = self.order.iter().position(|&other| other == id)?;
+        self.order.remove(from);
+
+        // Put it back at the clamped target position.
+        let to = index.min(self.order.len());
+        self.order.insert(to, id);
+
+        Some(to)
     }
 
     pub fn get(&self, id: PaneId) -> Option<&PaneInfo> {
@@ -35,7 +62,11 @@ impl AppState {
     }
 
     pub fn list(&self) -> Vec<PaneInfo> {
-        self.panes.values().cloned().collect()
+        self.order
+            .iter()
+            .filter_map(|id| self.panes.get(id))
+            .cloned()
+            .collect()
     }
 
     /// Records a detection result. Returns true when the agent or its status
@@ -83,6 +114,29 @@ mod tests {
         state.insert(pane(first));
         state.remove(first);
         assert_ne!(state.allocate_id(), first);
+    }
+
+    #[test]
+    fn panes_list_in_order_and_can_be_moved() {
+        let mut state = AppState::default();
+        for _ in 0..3 {
+            let id = state.allocate_id();
+            state.insert(pane(id));
+        }
+        let ids = |state: &AppState| state.list().iter().map(|p| p.id).collect::<Vec<_>>();
+        assert_eq!(ids(&state), [1, 2, 3]);
+
+        assert_eq!(state.move_to(3, 0), Some(0));
+        assert_eq!(ids(&state), [3, 1, 2]);
+        assert_eq!(state.move_to(3, 99), Some(2));
+        assert_eq!(ids(&state), [1, 2, 3]);
+        assert_eq!(state.move_to(42, 0), None);
+
+        state.remove(2);
+        assert_eq!(ids(&state), [1, 3]);
+        let id = state.allocate_id();
+        state.insert(pane(id));
+        assert_eq!(ids(&state), [1, 3, 4]);
     }
 
     #[test]
