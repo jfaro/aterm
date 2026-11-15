@@ -1,4 +1,4 @@
-//! Translation of crossterm key and wheel events into what gets sent to a pane.
+//! Translation from crossterm key and wheel events to what is sent to a pane.
 
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -8,7 +8,7 @@ use vt100::MouseProtocolMode;
 
 #[derive(Debug, PartialEq)]
 pub enum PaneInput {
-    /// Literal text, typed as-is.
+    /// A text literal.
     Text(String),
 
     /// A key name understood by [`crate::keys::encode`].

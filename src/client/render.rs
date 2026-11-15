@@ -138,8 +138,7 @@ fn render_help(frame: &mut Frame, area: Rect) {
 fn render_sidebar(frame: &mut Frame, area: Rect, view: &View, now_ms: u64) {
     let block = Block::new()
         .borders(Borders::RIGHT)
-        .border_style(Style::new().dark_gray())
-        .title(" aterm ".bold());
+        .border_style(Style::new().dark_gray());
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -365,12 +364,12 @@ mod tests {
         assert_eq!(
             lines,
             [
-                " aterm         │",
                 " ○ 1 p1        │",
                 "▌▾ backend    2│",
                 "  ○ 2 p2       │",
                 "  ○ 3 p3       │",
                 " ▾ frontend   0│",
+                "               │",
             ]
         );
     }
