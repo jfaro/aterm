@@ -32,20 +32,29 @@ use crate::protocol::PaneInfo;
 use crate::protocol::events;
 use crate::rpc::Connection;
 use input::PaneInput;
+pub use view::DEFAULT_SIDEBAR_WIDTH;
+pub use view::MIN_SIDEBAR_WIDTH;
 use view::Mode;
 use view::PromptKind;
+use view::Sidebar;
 use view::View;
 use view::areas;
 
 const CLOCK_TICK: Duration = Duration::from_secs(1);
 
-pub async fn attach() -> Result<()> {
+/// Sidebar columns gained or lost per resize key, and with shift held.
+const RESIZE_STEP: i16 = 2;
+const RESIZE_BIG_STEP: i16 = 8;
+
+pub async fn attach(sidebar_width: u16) -> Result<()> {
     let (conn, server_events) = Connection::connect_or_spawn().await?;
     conn.call("events.subscribe", json!({})).await?;
 
     let mut terminal = ratatui::init();
     let _ = execute!(stdout(), EnableBracketedPaste);
-    let result = App::new(conn).run(&mut terminal, server_events).await;
+    let result = App::new(conn, Sidebar::new(sidebar_width))
+        .run(&mut terminal, server_events)
+        .await;
     let _ = execute!(stdout(), DisableBracketedPaste);
     ratatui::restore();
     result
@@ -54,6 +63,7 @@ pub async fn attach() -> Result<()> {
 struct App {
     conn: Arc<Connection>,
     view: View,
+    screen_area: Rect,
     pane_area: Rect,
     list_dirty: bool,
     screen_dirty: bool,
@@ -61,10 +71,11 @@ struct App {
 }
 
 impl App {
-    fn new(conn: Arc<Connection>) -> Self {
+    fn new(conn: Arc<Connection>, sidebar: Sidebar) -> Self {
         Self {
             conn,
-            view: View::new(),
+            view: View::new(sidebar),
+            screen_area: Rect::default(),
             pane_area: Rect::default(),
             list_dirty: true,
             screen_dirty: true,
@@ -79,7 +90,8 @@ impl App {
     ) -> Result<()> {
         let mut terminal_events = spawn_terminal_reader();
         let size = terminal.size()?;
-        self.pane_area = areas(Rect::new(0, 0, size.width, size.height)).pane;
+        self.screen_area = Rect::new(0, 0, size.width, size.height);
+        self.relayout();
         // Redraws periodically so the sidebar's status durations keep counting.
         let mut clock = tokio::time::interval(CLOCK_TICK);
         clock.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -129,8 +141,8 @@ impl App {
                 _ => self.send_to_focused(PaneInput::Text(text)).await,
             },
             event::Event::Resize(width, height) => {
-                self.pane_area = areas(Rect::new(0, 0, width, height)).pane;
-                self.list_dirty = true;
+                self.screen_area = Rect::new(0, 0, width, height);
+                self.relayout();
             }
             _ => {}
         }
@@ -146,6 +158,7 @@ impl App {
                 }
             }
             Mode::Prefix => self.on_prefix_command(key).await,
+            Mode::Resize => self.on_resize_key(key),
             Mode::Prompt { kind, mut input } => match key.code {
                 KeyCode::Esc => {}
                 KeyCode::Enter => self.submit_prompt(kind, input).await,
@@ -207,8 +220,57 @@ impl App {
                         .await;
                 }
             }
+            KeyCode::Char('<') => self.start_resizing(-RESIZE_STEP),
+            KeyCode::Char('>') => self.start_resizing(RESIZE_STEP),
+            KeyCode::Char('b') => {
+                self.view.sidebar.visible = !self.view.sidebar.visible;
+                self.relayout();
+            }
             KeyCode::Char('d' | 'q') => self.quit = true,
             _ => {}
+        }
+    }
+
+    fn start_resizing(&mut self, delta: i16) {
+        self.resize_sidebar(delta);
+        self.view.mode = Mode::Resize;
+    }
+
+    /// Resizes on resize keys and stays in resize mode; any other key leaves it unsent.
+    fn on_resize_key(&mut self, key: KeyEvent) {
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        let delta = match key.code {
+            KeyCode::Char('<' | 'h') => -RESIZE_STEP,
+            KeyCode::Char('>' | 'l') => RESIZE_STEP,
+            KeyCode::Char('H') => -RESIZE_BIG_STEP,
+            KeyCode::Char('L') => RESIZE_BIG_STEP,
+            KeyCode::Left if shift => -RESIZE_BIG_STEP,
+            KeyCode::Right if shift => RESIZE_BIG_STEP,
+            KeyCode::Left => -RESIZE_STEP,
+            KeyCode::Right => RESIZE_STEP,
+            KeyCode::Char('=') => {
+                self.view.sidebar.reset();
+                self.relayout();
+                self.view.mode = Mode::Resize;
+                return;
+            }
+            _ => return,
+        };
+        self.start_resizing(delta);
+    }
+
+    fn resize_sidebar(&mut self, delta: i16) {
+        self.view.sidebar.resize(delta, self.screen_area.width);
+        self.relayout();
+    }
+
+    /// Recomputes the pane area after the screen or sidebar changed, resizing every pane to fit.
+    fn relayout(&mut self) {
+        let pane_area = areas(self.screen_area, &self.view.sidebar).pane;
+        if pane_area != self.pane_area {
+            self.pane_area = pane_area;
+            self.list_dirty = true;
+            self.screen_dirty = true;
         }
     }
 

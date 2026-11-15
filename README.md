@@ -9,6 +9,7 @@ each other.
 
 ```sh
 aterm                                   # attach the TUI (starts the server if needed)
+aterm --sidebar-width 40                # … with a wider sidebar
 
 aterm pane create -- claude             # start a pane, prints its id
 aterm pane list
@@ -34,19 +35,27 @@ back to automatic naming.
 
 Prefix is `ctrl-b`, followed by:
 
-| key           | action                           |
-| ------------- | -------------------------------- |
-| `c`           | new shell pane                   |
-| `a`           | new pane running a typed command |
-| `n`/`j`/`↓`   | next pane                        |
-| `p`/`k`/`↑`   | previous pane                    |
-| `1`–`9`       | focus pane by position           |
-| `J`/`shift-↓` | move focused pane down           |
-| `K`/`shift-↑` | move focused pane up             |
-| `r`           | rename pane                      |
-| `x`           | close pane                       |
-| `d`/`q`       | detach (panes keep running)      |
-| `ctrl-b`      | send a literal `ctrl-b`          |
+| key           | action                                 |
+| ------------- | -------------------------------------- |
+| `c`           | new shell pane                         |
+| `a`           | new pane running a typed command       |
+| `n`/`j`/`↓`   | next pane                              |
+| `p`/`k`/`↑`   | previous pane                          |
+| `1`–`9`       | focus pane by position                 |
+| `J`/`shift-↓` | move focused pane down                 |
+| `K`/`shift-↑` | move focused pane up                   |
+| `r`           | rename pane                            |
+| `x`           | close pane                             |
+| `<`/`>`       | shrink/grow sidebar, enter resize mode |
+| `b`           | hide/show sidebar                      |
+| `d`/`q`       | detach (panes keep running)            |
+| `ctrl-b`      | send a literal `ctrl-b`                |
+
+In resize mode, `<`/`>`, `h`/`l` or `←`/`→` keep resizing by 2 columns
+(`H`/`L` or `shift-←`/`shift-→` by 8), `=` resets to the default width, and
+any other key leaves the mode without reaching the pane. The sidebar is at
+least 16 columns wide and always leaves the pane 20; set its starting width
+with `aterm --sidebar-width N`.
 
 ## Architecture
 

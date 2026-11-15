@@ -26,8 +26,9 @@ use crate::detect::AgentState;
 use crate::protocol::PaneInfo;
 use crate::protocol::unix_millis;
 
-const HINTS: &str =
-    " ctrl-b  c shell · a command · n/p switch · J/K move · r rename · x close · d detach";
+const HINTS: &str = " ctrl-b  c shell · a command · n/p switch · J/K move · r rename · x close · \
+                     </> resize · b sidebar · d detach";
+const RESIZE_HINTS: &str = " resize  ←/→ adjust · shift ±8 · = reset · esc done";
 
 /// Draws `view` as of `now`, which dates the sidebar's status durations.
 pub fn render(frame: &mut Frame, view: &View, now: SystemTime) {
@@ -35,8 +36,10 @@ pub fn render(frame: &mut Frame, view: &View, now: SystemTime) {
         sidebar,
         pane,
         status,
-    } = areas(frame.area());
-    render_sidebar(frame, sidebar, view, unix_millis(now));
+    } = areas(frame.area(), &view.sidebar);
+    if sidebar.width > 0 {
+        render_sidebar(frame, sidebar, view, unix_millis(now));
+    }
     render_pane(frame, pane, view);
     render_status(frame, status, view);
 }
@@ -176,6 +179,13 @@ fn render_status(frame: &mut Frame, area: Rect, view: &View) {
             ])
         }
         Mode::Prefix => Line::from(Span::styled(HINTS, Style::new().black().on_cyan())),
+        Mode::Resize => {
+            let width = view.sidebar.width_on(area.width);
+            Line::from(vec![
+                Span::styled(RESIZE_HINTS, Style::new().black().on_cyan()),
+                Span::styled(format!("  width {width}"), Style::new().cyan()),
+            ])
+        }
         Mode::Normal => match &view.message {
             Some(message) => Line::from(Span::styled(format!(" {message}"), Style::new().red())),
             None => Line::from(Span::styled(HINTS, Style::new().dark_gray())),

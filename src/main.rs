@@ -19,6 +19,14 @@ use clap::Parser;
 struct Cli {
     #[command(subcommand)]
     command: Option<cli::Command>,
+
+    /// Starting width of the TUI sidebar, in columns.
+    #[arg(
+        long,
+        default_value_t = client::DEFAULT_SIDEBAR_WIDTH,
+        value_parser = clap::value_parser!(u16).range(i64::from(client::MIN_SIDEBAR_WIDTH)..),
+    )]
+    sidebar_width: u16,
 }
 
 fn main() -> ExitCode {
@@ -36,7 +44,7 @@ fn main() -> ExitCode {
     // Run the aterm application.
     let result = runtime.block_on(async {
         match cli.command {
-            None => client::attach().await,
+            None => client::attach(cli.sidebar_width).await,
             Some(command) => cli::run(command).await,
         }
     });

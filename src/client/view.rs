@@ -7,7 +7,11 @@ use ratatui::layout::Rect;
 use crate::protocol::PaneId;
 use crate::protocol::PaneInfo;
 
-pub const SIDEBAR_WIDTH: u16 = 28;
+pub const DEFAULT_SIDEBAR_WIDTH: u16 = 28;
+pub const MIN_SIDEBAR_WIDTH: u16 = 16;
+
+/// Columns the pane keeps however wide the sidebar is asked to be.
+const MIN_PANE_WIDTH: u16 = 20;
 
 pub enum Mode {
     /// Keys go to the focused pane.
@@ -18,6 +22,9 @@ pub enum Mode {
 
     /// Typing into the status-bar prompt.
     Prompt { kind: PromptKind, input: String },
+
+    /// Adjusting the sidebar width; keys keep resizing until one ends the mode.
+    Resize,
 }
 
 #[derive(Clone, Copy)]
@@ -32,6 +39,55 @@ impl PromptKind {
             Self::NewPane => "command",
             Self::Rename => "rename",
         }
+    }
+}
+
+pub struct Sidebar {
+    /// Width asked for, kept even while the screen is too narrow to honor it.
+    pub width: u16,
+
+    /// Whether the sidebar is drawn at all.
+    pub visible: bool,
+}
+
+impl Sidebar {
+    pub fn new(width: u16) -> Self {
+        Self {
+            width: width.max(MIN_SIDEBAR_WIDTH),
+            visible: true,
+        }
+    }
+
+    /// Columns the sidebar occupies on a screen `screen_width` columns wide.
+    pub fn width_on(&self, screen_width: u16) -> u16 {
+        if !self.visible {
+            return 0;
+        }
+        self.width.min(screen_width.saturating_sub(MIN_PANE_WIDTH))
+    }
+
+    /// Changes the width by `delta` columns, starting from what a screen `screen_width` columns
+    /// wide can show and staying within its bounds, and shows the sidebar.
+    pub fn resize(&mut self, delta: i16, screen_width: u16) {
+        let max = screen_width
+            .saturating_sub(MIN_PANE_WIDTH)
+            .max(MIN_SIDEBAR_WIDTH);
+        self.width = self
+            .width
+            .min(max)
+            .saturating_add_signed(delta)
+            .clamp(MIN_SIDEBAR_WIDTH, max);
+        self.visible = true;
+    }
+
+    pub fn reset(&mut self) {
+        self.width = DEFAULT_SIDEBAR_WIDTH;
+    }
+}
+
+impl Default for Sidebar {
+    fn default() -> Self {
+        Self::new(DEFAULT_SIDEBAR_WIDTH)
     }
 }
 
@@ -50,16 +106,20 @@ pub struct View {
 
     /// Error shown in the status bar until the next key press.
     pub message: Option<String>,
+
+    /// Width and visibility of the pane list.
+    pub sidebar: Sidebar,
 }
 
 impl View {
-    pub fn new() -> Self {
+    pub fn new(sidebar: Sidebar) -> Self {
         Self {
             panes: Vec::new(),
             focused: None,
             screen: vt100::Parser::new(1, 1, 0),
             mode: Mode::Normal,
             message: None,
+            sidebar,
         }
     }
 
@@ -107,11 +167,12 @@ pub struct Areas {
     pub status: Rect,
 }
 
-pub fn areas(screen: Rect) -> Areas {
+pub fn areas(screen: Rect, sidebar: &Sidebar) -> Areas {
     let [main, status] =
         Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(screen);
+    let sidebar_width = sidebar.width_on(screen.width);
     let [sidebar, pane] =
-        Layout::horizontal([Constraint::Length(SIDEBAR_WIDTH), Constraint::Min(1)]).areas(main);
+        Layout::horizontal([Constraint::Length(sidebar_width), Constraint::Min(1)]).areas(main);
     Areas {
         sidebar,
         pane,
@@ -142,7 +203,7 @@ mod tests {
 
     #[test]
     fn focus_survives_list_refresh_and_falls_back() {
-        let mut view = View::new();
+        let mut view = View::new(Sidebar::default());
         assert!(view.set_panes(vec![pane(1), pane(2)]));
         assert_eq!(view.focused, Some(1));
 
@@ -158,11 +219,49 @@ mod tests {
 
     #[test]
     fn focus_cycles_with_wraparound() {
-        let mut view = View::new();
+        let mut view = View::new(Sidebar::default());
         view.set_panes(vec![pane(1), pane(2), pane(3)]);
         view.cycle_focus(-1);
         assert_eq!(view.focused, Some(3));
         view.cycle_focus(2);
         assert_eq!(view.focused, Some(2));
+    }
+
+    #[test]
+    fn sidebar_resizes_within_bounds() {
+        let mut sidebar = Sidebar::default();
+        sidebar.resize(2, 100);
+        assert_eq!(sidebar.width, 30);
+        sidebar.resize(-100, 100);
+        assert_eq!(sidebar.width, MIN_SIDEBAR_WIDTH);
+        sidebar.resize(100, 100);
+        assert_eq!(sidebar.width, 100 - MIN_PANE_WIDTH);
+        sidebar.reset();
+        assert_eq!(sidebar.width, DEFAULT_SIDEBAR_WIDTH);
+    }
+
+    #[test]
+    fn sidebar_narrows_on_small_screens_but_keeps_its_width() {
+        let mut sidebar = Sidebar::new(40);
+        assert_eq!(sidebar.width_on(50), 30);
+        assert_eq!(sidebar.width_on(200), 40);
+
+        // Resizing starts from what is on screen, not the remembered width.
+        sidebar.resize(-2, 50);
+        assert_eq!(sidebar.width, 28);
+    }
+
+    #[test]
+    fn hidden_sidebar_takes_no_space_until_resized() {
+        let mut sidebar = Sidebar {
+            visible: false,
+            ..Sidebar::default()
+        };
+        let screen = Rect::new(0, 0, 100, 10);
+        assert_eq!(areas(screen, &sidebar).pane.width, 100);
+
+        sidebar.resize(2, 100);
+        assert!(sidebar.visible);
+        assert_eq!(areas(screen, &sidebar).sidebar.width, 30);
     }
 }
