@@ -182,7 +182,7 @@ fn render_pane(frame: &mut Frame, area: Rect, view: &View) {
     cursor.hide();
     frame.render_widget(PseudoTerminal::new(screen).cursor(cursor), area);
 
-    if matches!(view.mode, Mode::Normal) && !screen.hide_cursor() {
+    if matches!(view.mode, Mode::Normal) && view.scrollback == 0 && !screen.hide_cursor() {
         let (row, col) = screen.cursor_position();
         if row < area.height && col < area.width {
             frame.set_cursor_position(Position::new(area.x + col, area.y + row));
@@ -214,6 +214,13 @@ fn render_status(frame: &mut Frame, area: Rect, view: &View) {
         }
         Mode::Normal => match &view.message {
             Some(message) => Line::from(Span::styled(format!(" {message}"), Style::new().red())),
+            None if view.scrollback > 0 => Line::from(Span::styled(
+                format!(
+                    " scrolled back {} lines · scroll down or type to return",
+                    view.scrollback
+                ),
+                Style::new().black().on_yellow(),
+            )),
             None => Line::from(Span::styled(HINTS, Style::new().dark_gray())),
         },
     };

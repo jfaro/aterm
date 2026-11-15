@@ -1,8 +1,10 @@
-//! Translation of crossterm key events into what gets sent to a pane.
+//! Translation of crossterm key and wheel events into what gets sent to a pane.
 
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
+use vt100::MouseProtocolEncoding;
+use vt100::MouseProtocolMode;
 
 #[derive(Debug, PartialEq)]
 pub enum PaneInput {
@@ -47,9 +49,49 @@ pub fn translate(key: &KeyEvent) -> Option<PaneInput> {
     Some(PaneInput::Key(format!("{alt_prefix}{named}")))
 }
 
+/// Bytes reporting one wheel notch at the 0-based cell (`col`, `row`) to a
+/// program that turned on mouse reporting, or `None` if it hasn't.
+pub fn encode_wheel(up: bool, col: u16, row: u16, screen: &vt100::Screen) -> Option<String> {
+    if screen.mouse_protocol_mode() == MouseProtocolMode::None {
+        return None;
+    }
+    let button: u32 = if up { 64 } else { 65 };
+    let (col, row) = (u32::from(col) + 1, u32::from(row) + 1);
+    let legacy = |max: u32| -> String {
+        [button, col, row]
+            .iter()
+            .filter_map(|v| char::from_u32((v + 32).min(max)))
+            .collect()
+    };
+    Some(match screen.mouse_protocol_encoding() {
+        MouseProtocolEncoding::Sgr => format!("\x1b[<{button};{col};{row}M"),
+        MouseProtocolEncoding::Utf8 => format!("\x1b[M{}", legacy(2047)),
+        // Values above 127 would be mangled into UTF-8 on the way to the pane.
+        MouseProtocolEncoding::Default => format!("\x1b[M{}", legacy(127)),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wheel_reports_follow_the_programs_mouse_modes() {
+        let mut parser = vt100::Parser::new(10, 10, 0);
+        assert_eq!(encode_wheel(true, 0, 0, parser.screen()), None);
+
+        parser.process(b"\x1b[?1000h");
+        assert_eq!(
+            encode_wheel(true, 2, 4, parser.screen()).as_deref(),
+            Some("\x1b[M`#%")
+        );
+
+        parser.process(b"\x1b[?1006h");
+        assert_eq!(
+            encode_wheel(false, 2, 4, parser.screen()).as_deref(),
+            Some("\x1b[<65;3;5M")
+        );
+    }
 
     fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
         KeyEvent::new(code, modifiers)

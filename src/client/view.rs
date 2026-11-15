@@ -101,6 +101,15 @@ pub struct View {
     /// Local mirror of the focused pane's screen.
     pub screen: vt100::Parser,
 
+    /// Pane that `screen` mirrors, which may lag `focused` until the next read.
+    pub screen_pane: Option<PaneId>,
+
+    /// Lines `screen` is scrolled back into the pane's history; 0 when live.
+    pub scrollback: usize,
+
+    /// Whether the mirrored pane is on the alternate screen.
+    pub alternate_screen: bool,
+
     /// How the next key is interpreted.
     pub mode: Mode,
 
@@ -117,6 +126,9 @@ impl View {
             panes: Vec::new(),
             focused: None,
             screen: vt100::Parser::new(1, 1, 0),
+            screen_pane: None,
+            scrollback: 0,
+            alternate_screen: false,
             mode: Mode::Normal,
             message: None,
             sidebar,

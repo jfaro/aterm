@@ -11,15 +11,19 @@ use std::time::SystemTime;
 
 use anyhow::Result;
 use anyhow::bail;
+use crossterm::Command;
 use crossterm::event::DisableBracketedPaste;
 use crossterm::event::EnableBracketedPaste;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
 use crossterm::event::KeyModifiers;
+use crossterm::event::MouseEvent;
+use crossterm::event::MouseEventKind;
 use crossterm::event::{self};
 use crossterm::execute;
 use ratatui::DefaultTerminal;
+use ratatui::layout::Position;
 use ratatui::layout::Rect;
 use serde_json::Value;
 use serde_json::json;
@@ -45,18 +49,36 @@ const CLOCK_TICK: Duration = Duration::from_secs(1);
 const RESIZE_STEP: i16 = 2;
 const RESIZE_BIG_STEP: i16 = 8;
 
+/// Lines scrolled per wheel notch.
+const WHEEL_LINES: usize = 3;
+
 pub async fn attach(sidebar_width: u16) -> Result<()> {
     let (conn, server_events) = Connection::connect_or_spawn().await?;
     conn.call("events.subscribe", json!({})).await?;
 
     let mut terminal = ratatui::init();
-    let _ = execute!(stdout(), EnableBracketedPaste);
+    let _ = execute!(stdout(), EnableBracketedPaste, WheelReporting(true));
     let result = App::new(conn, Sidebar::new(sidebar_width))
         .run(&mut terminal, server_events)
         .await;
-    let _ = execute!(stdout(), DisableBracketedPaste);
+    let _ = execute!(stdout(), WheelReporting(false), DisableBracketedPaste);
     ratatui::restore();
     result
+}
+
+/// Turns SGR mouse button reporting on or off. Unlike crossterm's mouse
+/// capture it leaves motion unreported, so moving the mouse costs no redraws.
+/// Without it, the outer terminal turns the wheel into arrow keys.
+struct WheelReporting(bool);
+
+impl Command for WheelReporting {
+    fn write_ansi(&self, f: &mut impl std::fmt::Write) -> std::fmt::Result {
+        f.write_str(if self.0 {
+            "\x1b[?1000h\x1b[?1006h"
+        } else {
+            "\x1b[?1006l\x1b[?1000l"
+        })
+    }
 }
 
 struct App {
@@ -149,6 +171,7 @@ impl App {
                 Mode::Prompt { input, .. } => input.push_str(&text),
                 _ => self.send_to_focused(PaneInput::Text(text)).await,
             },
+            event::Event::Mouse(mouse) => self.on_mouse(mouse).await,
             event::Event::Resize(width, height) => {
                 self.screen_area = Rect::new(0, 0, width, height);
                 self.relayout();
@@ -182,6 +205,44 @@ impl App {
                 _ => self.view.mode = Mode::Prompt { kind, input },
             },
         }
+    }
+
+    /// Routes the wheel over the pane the way a terminal would: to the program
+    /// if it asked for mouse reports, as arrow keys on the alternate screen
+    /// (which has no history), and otherwise through the pane's scrollback.
+    async fn on_mouse(&mut self, mouse: MouseEvent) {
+        let up = match mouse.kind {
+            MouseEventKind::ScrollUp => true,
+            MouseEventKind::ScrollDown => false,
+            _ => return,
+        };
+        let position = Position::new(mouse.column, mouse.row);
+        if !matches!(self.view.mode, Mode::Normal) || !self.pane_area.contains(position) {
+            return;
+        }
+
+        if self.view.scrollback == 0 {
+            let (col, row) = (position.x - self.pane_area.x, position.y - self.pane_area.y);
+            if let Some(report) = input::encode_wheel(up, col, row, self.view.screen.screen()) {
+                self.send_to_focused(PaneInput::Text(report)).await;
+                return;
+            }
+            if self.view.alternate_screen {
+                let key = if up { "up" } else { "down" };
+                for _ in 0..WHEEL_LINES {
+                    self.send_to_focused(PaneInput::Key(key.into())).await;
+                }
+                return;
+            }
+        }
+
+        // The server clamps how far back this can go.
+        self.view.scrollback = if up {
+            self.view.scrollback.saturating_add(WHEEL_LINES)
+        } else {
+            self.view.scrollback.saturating_sub(WHEEL_LINES)
+        };
+        self.screen_dirty = true;
     }
 
     async fn on_prefix_command(&mut self, key: KeyEvent) {
@@ -349,6 +410,11 @@ impl App {
         let Some(pane) = self.view.focused else {
             return;
         };
+        // Typing returns a scrolled-back view to the live screen.
+        if self.view.scrollback > 0 {
+            self.view.scrollback = 0;
+            self.screen_dirty = true;
+        }
         let (method, params) = match pane_input {
             PaneInput::Text(text) => ("pane.send_text", json!({ "pane": pane, "text": text })),
             PaneInput::Key(key) => ("pane.send_keys", json!({ "pane": pane, "keys": [key] })),
@@ -387,19 +453,29 @@ impl App {
         self.screen_dirty = false;
         let (rows, cols) = (self.pane_area.height.max(1), self.pane_area.width.max(1));
         let mut screen = vt100::Parser::new(rows, cols, 0);
-        if let Some(pane) = self.view.focused {
-            match self
-                .conn
-                .call("pane.read", json!({ "pane": pane, "format": "ansi" }))
-                .await
-            {
+        let pane = self.view.focused;
+        // A newly focused pane starts out live.
+        let requested = if pane == self.view.screen_pane {
+            self.view.scrollback
+        } else {
+            0
+        };
+        let (mut scrollback, mut alternate_screen) = (0, false);
+        if let Some(pane) = pane {
+            let params = json!({ "pane": pane, "format": "ansi", "scrollback": requested });
+            match self.conn.call("pane.read", params).await {
                 Ok(result) => {
-                    screen.process(result["ansi"].as_str().unwrap_or_default().as_bytes())
+                    screen.process(result["ansi"].as_str().unwrap_or_default().as_bytes());
+                    scrollback = result["scrollback"].as_u64().unwrap_or(0) as usize;
+                    alternate_screen = result["alternate_screen"].as_bool().unwrap_or(false);
                 }
                 Err(_) => self.list_dirty = true,
             }
         }
         self.view.screen = screen;
+        self.view.screen_pane = pane;
+        self.view.scrollback = scrollback;
+        self.view.alternate_screen = alternate_screen;
     }
 }
 

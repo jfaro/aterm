@@ -515,7 +515,14 @@ async fn dispatch(server: &Server, method: &str, params: Value) -> Result<Value>
             let terminal = server.terminal(p.pane)?;
             Ok(match p.format {
                 ReadFormat::Text => json!({ "text": last_lines(&terminal.text(), p.lines) }),
-                ReadFormat::Ansi => json!({ "ansi": String::from_utf8_lossy(&terminal.ansi()) }),
+                ReadFormat::Ansi => {
+                    let snapshot = terminal.ansi(p.scrollback);
+                    json!({
+                        "ansi": String::from_utf8_lossy(&snapshot.ansi),
+                        "scrollback": snapshot.scrollback,
+                        "alternate_screen": snapshot.alternate_screen,
+                    })
+                }
             })
         }
         "pane.send_text" => {
@@ -624,6 +631,8 @@ struct ReadParams {
     #[serde(default)]
     format: ReadFormat,
     lines: Option<usize>,
+    #[serde(default)]
+    scrollback: usize,
 }
 
 #[derive(Deserialize)]

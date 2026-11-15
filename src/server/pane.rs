@@ -19,7 +19,7 @@ use portable_pty::native_pty_system;
 
 use crate::protocol::PaneId;
 
-const SCROLLBACK_LINES: usize = 0;
+const SCROLLBACK_LINES: usize = 10_000;
 
 pub type PtyWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 
@@ -71,6 +71,17 @@ impl vt100::Callbacks for TerminalCallbacks {
     }
 }
 
+pub struct AnsiSnapshot {
+    /// Bytes that redraw the viewed screen.
+    pub ansi: Vec<u8>,
+
+    /// Lines scrolled back into the history, after clamping.
+    pub scrollback: usize,
+
+    /// Whether the program is on the alternate screen, which has no history.
+    pub alternate_screen: bool,
+}
+
 impl Terminal {
     fn new(rows: u16, cols: u16) -> Self {
         Self {
@@ -102,10 +113,21 @@ impl Terminal {
         self.parser.lock().unwrap().screen().contents()
     }
 
-    /// Bytes that recreate the full screen (contents, cursor, input modes) on
-    /// a blank terminal of the same size.
-    pub fn ansi(&self) -> Vec<u8> {
-        self.parser.lock().unwrap().screen().state_formatted()
+    /// Bytes that recreate the screen (contents, cursor, input modes) on a
+    /// blank terminal of the same size, viewed `scrollback` lines up into the
+    /// history. The offset is clamped to the history available.
+    pub fn ansi(&self, scrollback: usize) -> AnsiSnapshot {
+        let mut parser = self.parser.lock().unwrap();
+        let screen = parser.screen_mut();
+        screen.set_scrollback(scrollback);
+        let snapshot = AnsiSnapshot {
+            ansi: screen.state_formatted(),
+            scrollback: screen.scrollback(),
+            alternate_screen: screen.alternate_screen(),
+        };
+        // Everything else (detection, text reads) sees the live screen.
+        screen.set_scrollback(0);
+        snapshot
     }
 
     /// Window title set by the program via OSC 0/2.
@@ -273,5 +295,19 @@ mod tests {
         let (title, lines) = terminal.detection_snapshot();
         assert_eq!(title, "working");
         assert_eq!(lines, vec!["hello", "", ""]);
+    }
+
+    #[test]
+    fn reads_scrollback_without_disturbing_the_live_screen() {
+        let terminal = Terminal::new(2, 20);
+        terminal.process(b"one\r\ntwo\r\nthree\r\nfour");
+
+        let snapshot = terminal.ansi(1);
+        assert_eq!(snapshot.scrollback, 1);
+        assert!(String::from_utf8_lossy(&snapshot.ansi).contains("two"));
+        assert_eq!(terminal.ansi(100).scrollback, 2);
+
+        let (_, lines) = terminal.detection_snapshot();
+        assert_eq!(lines, vec!["three", "four"]);
     }
 }
