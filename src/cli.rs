@@ -48,7 +48,7 @@ pub enum ServerAction {
 pub enum PaneAction {
     /// Start a pane running COMMAND (or your shell).
     Create {
-        /// Name shown in the sidebar; defaults to the program name.
+        /// Name shown in the sidebar; defaults to following the window title.
         #[arg(long)]
         name: Option<String>,
 
@@ -110,8 +110,8 @@ pub enum PaneAction {
         /// Pane to rename.
         pane: PaneId,
 
-        /// New name.
-        name: String,
+        /// New name; omit it to go back to automatic naming.
+        name: Option<String>,
     },
 
     /// Move a pane to another position in the sidebar.

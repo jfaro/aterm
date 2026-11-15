@@ -24,6 +24,12 @@ aterm server stop
 Processes inside a pane get `ATERM_PANE` and `ATERM_SOCKET`, so an agent can
 drive its sibling panes with the same CLI.
 
+Panes name themselves until you name them: the sidebar shows the window title
+the program sets (e.g. Claude Code's task summary), falling back to the
+detected agent and then the program name. Renaming pins the name; renaming to
+an empty name (`ctrl-b r`, clear, enter, or `aterm pane rename <id>`) goes
+back to automatic naming.
+
 ### TUI keys
 
 Prefix is `ctrl-b`, followed by:
@@ -76,7 +82,7 @@ and replies look like `{"id": 1, "result": …}` or `{"id": 1, "error": "…"}`.
 | `pane.send_text`  | `pane`, `text`                               |
 | `pane.send_keys`  | `pane`, `keys: [..]`                         |
 | `pane.resize`     | `pane`, `rows`, `cols`                       |
-| `pane.rename`     | `pane`, `name`                               |
+| `pane.rename`     | `pane`, `name?` (omit or blank to auto-name) |
 | `pane.move`       | `pane`, `index` (0-based, clamped)           |
 | `pane.close`      | `pane`                                       |
 | `agent.wait`      | `pane`, `status`, `timeout_ms?`              |

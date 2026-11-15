@@ -69,6 +69,37 @@ impl AppState {
             .collect()
     }
 
+    /// Gives a pane a user-chosen name, or with `None` hands naming back to
+    /// [`auto_label`] using the pane's current window `title`.
+    pub fn rename(&mut self, id: PaneId, name: Option<String>, title: &str) -> Option<&PaneInfo> {
+        let pane = self.panes.get_mut(&id)?;
+        match name {
+            Some(name) => {
+                pane.name = name;
+                pane.auto_named = false;
+            }
+            None => {
+                pane.name = auto_label(title, pane.agent.as_deref(), &pane.command);
+                pane.auto_named = true;
+            }
+        }
+        Some(pane)
+    }
+
+    /// Re-derives an auto-named pane's name from its window `title`. Returns
+    /// true when the name changed, i.e. when observers should be notified.
+    pub fn refresh_auto_name(&mut self, id: PaneId, title: &str) -> bool {
+        let Some(pane) = self.panes.get_mut(&id).filter(|pane| pane.auto_named) else {
+            return false;
+        };
+        let label = auto_label(title, pane.agent.as_deref(), &pane.command);
+        if pane.name == label {
+            return false;
+        }
+        pane.name = label;
+        true
+    }
+
     /// Records a detection result observed at `now_ms`. Returns true when the
     /// agent or its status changed, i.e. when observers should be notified.
     pub fn apply_detection(
@@ -92,6 +123,33 @@ impl AppState {
     }
 }
 
+/// Name for a pane the user hasn't named: its window title, else the agent
+/// running in it, else the program it was started with.
+pub fn auto_label(title: &str, agent: Option<&str>, command: &str) -> String {
+    let title = clean_title(title);
+    if !title.is_empty() {
+        return title;
+    }
+    agent.map_or_else(|| program_name(command), str::to_owned)
+}
+
+/// Basename of the program in a command line, e.g. `claude` for
+/// `/opt/bin/claude --resume`.
+pub fn program_name(command: &str) -> String {
+    let program = command.split_whitespace().next().unwrap_or("shell");
+    program.rsplit('/').next().unwrap_or(program).to_owned()
+}
+
+/// Strips control characters and leading status glyphs (spinners, `✳`, …),
+/// which agents animate and which would otherwise churn the name.
+fn clean_title(title: &str) -> String {
+    let title: String = title.chars().filter(|c| !c.is_control()).collect();
+    title
+        .trim_start_matches(|c: char| c.is_whitespace() || (!c.is_ascii() && !c.is_alphanumeric()))
+        .trim_end()
+        .to_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,6 +159,7 @@ mod tests {
         PaneInfo {
             id,
             name: format!("p{id}"),
+            auto_named: true,
             command: "sh".into(),
             cwd: "/".into(),
             rows: 24,
@@ -170,5 +229,37 @@ mod tests {
         let pane = state.get(id).unwrap();
         assert_eq!(pane.status, AgentState::Unknown);
         assert_eq!(pane.status_since, 30);
+    }
+
+    #[test]
+    fn auto_label_prefers_title_then_agent_then_program() {
+        assert_eq!(
+            auto_label("⠋ Fix the tests ", Some("claude"), "claude"),
+            "Fix the tests"
+        );
+        assert_eq!(auto_label("~/src\x07", None, "shell"), "~/src");
+        assert_eq!(auto_label(" ✳ ", Some("codex"), "shell"), "codex");
+        assert_eq!(auto_label("", None, "/opt/bin/claude --resume"), "claude");
+        assert_eq!(auto_label("", None, "shell"), "shell");
+    }
+
+    #[test]
+    fn auto_name_follows_title_until_renamed() {
+        let mut state = AppState::default();
+        let id = state.allocate_id();
+        state.insert(pane(id));
+
+        assert!(state.refresh_auto_name(id, "build"));
+        assert!(!state.refresh_auto_name(id, "build"));
+        assert_eq!(state.get(id).unwrap().name, "build");
+
+        state.rename(id, Some("mine".into()), "build");
+        assert!(!state.refresh_auto_name(id, "test"));
+        assert_eq!(state.get(id).unwrap().name, "mine");
+
+        let pane = state.rename(id, None, "test").unwrap();
+        assert!(pane.auto_named);
+        assert_eq!(pane.name, "test");
+        assert!(!state.refresh_auto_name(999, "x"));
     }
 }

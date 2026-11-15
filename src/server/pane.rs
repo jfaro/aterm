@@ -108,6 +108,11 @@ impl Terminal {
         self.parser.lock().unwrap().screen().state_formatted()
     }
 
+    /// Window title set by the program via OSC 0/2.
+    pub fn title(&self) -> String {
+        self.parser.lock().unwrap().callbacks().title.clone()
+    }
+
     /// Window title and visible rows, as consumed by detection.
     pub fn detection_snapshot(&self) -> (String, Vec<String>) {
         let parser = self.parser.lock().unwrap();
