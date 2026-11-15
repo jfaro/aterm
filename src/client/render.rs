@@ -26,7 +26,8 @@ use crate::detect::AgentState;
 use crate::protocol::PaneInfo;
 use crate::protocol::unix_millis;
 
-const HINTS: &str = " ctrl-b  c shell · a command · n/p switch · r rename · x close · d detach";
+const HINTS: &str =
+    " ctrl-b  c shell · a command · n/p switch · J/K move · r rename · x close · d detach";
 
 /// Draws `view` as of `now`, which dates the sidebar's status durations.
 pub fn render(frame: &mut Frame, view: &View, now: SystemTime) {

@@ -88,6 +88,7 @@ pub fn unix_millis(time: SystemTime) -> u64 {
 pub mod events {
     pub const PANE_CREATED: &str = "pane.created";
     pub const PANE_UPDATED: &str = "pane.updated";
+    pub const PANE_MOVED: &str = "pane.moved";
     pub const PANE_OUTPUT_CHANGED: &str = "pane.output_changed";
     pub const PANE_AGENT_STATUS_CHANGED: &str = "pane.agent_status_changed";
     pub const PANE_EXITED: &str = "pane.exited";
