@@ -114,6 +114,16 @@ pub enum PaneAction {
         name: String,
     },
 
+    /// Move a pane to another position in the sidebar.
+    Move {
+        /// Pane to move.
+        pane: PaneId,
+
+        /// New position, counting from 1 as the sidebar does.
+        #[arg(value_parser = clap::value_parser!(u32).range(1..))]
+        position: u32,
+    },
+
     /// Kill a pane's process and remove it.
     Close {
         /// Pane to close.
@@ -234,6 +244,11 @@ async fn pane(conn: &Arc<Connection>, action: PaneAction) -> Result<()> {
         }
         PaneAction::Rename { pane, name } => {
             conn.call("pane.rename", json!({ "pane": pane, "name": name }))
+                .await?;
+        }
+        PaneAction::Move { pane, position } => {
+            let index = position as usize - 1;
+            conn.call("pane.move", json!({ "pane": pane, "index": index }))
                 .await?;
         }
         PaneAction::Close { pane } => {

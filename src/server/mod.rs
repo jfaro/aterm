@@ -245,6 +245,25 @@ impl Server {
         Ok(info)
     }
 
+    fn move_pane(&self, params: MoveParams) -> Result<usize> {
+        // Reorder the pane in the shared state.
+        let index = self
+            .inner
+            .lock()
+            .unwrap()
+            .state
+            .move_to(params.pane, params.index)
+            .ok_or_else(|| no_such_pane(params.pane))?;
+
+        // Tell clients to refresh their pane lists.
+        self.emit(
+            events::PANE_MOVED,
+            json!({ "pane": params.pane, "index": index }),
+        );
+
+        Ok(index)
+    }
+
     /// Writes to a pane off the async runtime: a child that stops reading its
     /// input must not stall the server.
     async fn write_to_pane(&self, id: PaneId, bytes: Vec<u8>) -> Result<()> {
@@ -496,6 +515,7 @@ async fn dispatch(server: &Server, method: &str, params: Value) -> Result<Value>
         }
         "pane.resize" => Ok(json!(server.resize_pane(parse(params)?)?)),
         "pane.rename" => Ok(json!(server.rename_pane(parse(params)?)?)),
+        "pane.move" => Ok(json!({ "index": server.move_pane(parse(params)?)? })),
         "pane.close" => {
             let p: PaneParams = parse(params)?;
             server.close_pane(p.pane)?;
@@ -606,6 +626,12 @@ struct ResizeParams {
 struct RenameParams {
     pane: PaneId,
     name: String,
+}
+
+#[derive(Deserialize)]
+struct MoveParams {
+    pane: PaneId,
+    index: usize,
 }
 
 #[derive(Deserialize)]

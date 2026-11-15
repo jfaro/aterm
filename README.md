@@ -15,6 +15,7 @@ aterm pane list
 aterm pane read 1 --lines 20
 aterm pane send-text 1 'fix the failing test' --enter
 aterm pane send-keys 1 down enter       # named keys: enter, esc, ctrl-c, alt-left, f5, …
+aterm pane move 3 1                     # move pane 3 to the top of the sidebar
 aterm agent wait 1 --status idle --timeout 600
 aterm events                            # stream events as JSON lines
 aterm server stop
@@ -34,6 +35,8 @@ Prefix is `ctrl-b`, followed by:
 | `n`/`j`/`↓`   | next pane                        |
 | `p`/`k`/`↑`   | previous pane                    |
 | `1`–`9`       | focus pane by position           |
+| `J`/`shift-↓` | move focused pane down           |
+| `K`/`shift-↑` | move focused pane up             |
 | `r`           | rename pane                      |
 | `x`           | close pane                       |
 | `d`/`q`       | detach (panes keep running)      |
@@ -74,12 +77,13 @@ and replies look like `{"id": 1, "result": …}` or `{"id": 1, "error": "…"}`.
 | `pane.send_keys`  | `pane`, `keys: [..]`                         |
 | `pane.resize`     | `pane`, `rows`, `cols`                       |
 | `pane.rename`     | `pane`, `name`                               |
+| `pane.move`       | `pane`, `index` (0-based, clamped)           |
 | `pane.close`      | `pane`                                       |
 | `agent.wait`      | `pane`, `status`, `timeout_ms?`              |
 | `events.subscribe`|                                              |
 
 Events (`{"event": …, "data": {"pane": id, …}}`): `pane.created`, `pane.updated`,
-`pane.output_changed`, `pane.agent_status_changed`, `pane.exited`, `pane.closed`.
+`pane.moved`, `pane.output_changed`, `pane.agent_status_changed`, `pane.exited`, `pane.closed`.
 
 ### Detection manifests
 

@@ -175,6 +175,14 @@ impl App {
                     };
                 }
             }
+            KeyCode::Char('J') => self.move_focused(1).await,
+            KeyCode::Char('K') => self.move_focused(-1).await,
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.move_focused(1).await
+            }
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.move_focused(-1).await
+            }
             KeyCode::Char('n' | 'j') | KeyCode::Down => {
                 self.change_focus(|view| view.cycle_focus(1))
             }
@@ -219,6 +227,25 @@ impl App {
         if self.view.focused != before {
             self.screen_dirty = true;
         }
+    }
+
+    /// Shifts the focused pane `delta` places in the sidebar, stopping at either end.
+    async fn move_focused(&mut self, delta: isize) {
+        let (Some(pane), Some(current)) = (self.view.focused, self.view.focused_index()) else {
+            return;
+        };
+
+        // Stop at either end of the sidebar.
+        let Some(index) = current.checked_add_signed(delta) else {
+            return;
+        };
+        if index >= self.view.panes.len() {
+            return;
+        }
+
+        // The server's `pane.moved` event triggers the list refresh.
+        self.call_reporting_errors("pane.move", json!({ "pane": pane, "index": index }))
+            .await;
     }
 
     async fn create_pane(&mut self, command: Option<String>) {

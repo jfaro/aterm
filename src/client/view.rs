@@ -79,17 +79,17 @@ impl View {
         self.focused != previous
     }
 
+    pub fn focused_index(&self) -> Option<usize> {
+        self.panes.iter().position(|p| Some(p.id) == self.focused)
+    }
+
     /// Moves focus by `delta` positions, wrapping around.
     pub fn cycle_focus(&mut self, delta: isize) {
         if self.panes.is_empty() {
             return;
         }
         let len = self.panes.len() as isize;
-        let current = self
-            .panes
-            .iter()
-            .position(|p| Some(p.id) == self.focused)
-            .unwrap_or(0) as isize;
+        let current = self.focused_index().unwrap_or(0) as isize;
         let next = (current + delta).rem_euclid(len) as usize;
         self.focused = Some(self.panes[next].id);
     }
