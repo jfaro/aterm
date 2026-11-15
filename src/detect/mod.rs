@@ -6,7 +6,8 @@
 mod manifest;
 pub mod process;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 pub use manifest::Detectors;
 
@@ -15,10 +16,13 @@ pub use manifest::Detectors;
 pub enum AgentState {
     /// Agent finished its turn and is waiting at its prompt.
     Idle,
+
     /// Agent is actively working.
     Working,
+
     /// Agent needs a human decision (permission prompt, confirmation, …).
     Blocked,
+
     /// Plain shell or unrecognized program.
     Unknown,
 }
@@ -27,6 +31,7 @@ pub enum AgentState {
 pub struct Snapshot<'a> {
     /// Window title set by the program via OSC 0/2.
     pub title: &'a str,
+
     /// Visible screen rows, top to bottom, with trailing whitespace trimmed.
     pub lines: &'a [String],
 }

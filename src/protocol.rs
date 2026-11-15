@@ -4,7 +4,8 @@
 //! carrying the same `id`, and pushes [`Event`]s to clients that called
 //! `events.subscribe`.
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 use serde_json::Value;
 
 use crate::detect::AgentState;
@@ -44,14 +45,30 @@ pub enum ServerMessage {
 /// Runtime facts about a pane, shared by the server and every client.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PaneInfo {
+    /// Unique for the server's lifetime; never reused.
     pub id: PaneId,
+
+    /// Display name, set by the user or derived from the command.
     pub name: String,
+
+    /// Command line the pane was started with, or `shell`.
     pub command: String,
+
+    /// Working directory the pane was started in.
     pub cwd: String,
+
+    /// Terminal height in rows.
     pub rows: u16,
+
+    /// Terminal width in columns.
     pub cols: u16,
+
+    /// Manifest id of the agent in the foreground, if one was identified.
     pub agent: Option<String>,
+
+    /// What the agent is doing, or `Unknown` when no agent was identified.
     pub status: AgentState,
+
     /// Id of the detection rule that produced `status`, for debugging manifests.
     pub rule: Option<String>,
 }

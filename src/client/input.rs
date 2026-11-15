@@ -1,10 +1,14 @@
 //! Translation of crossterm key events into what gets sent to a pane.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
+use crossterm::event::KeyModifiers;
 
 #[derive(Debug, PartialEq)]
 pub enum PaneInput {
+    /// Literal text, typed as-is.
     Text(String),
+
     /// A key name understood by [`crate::keys::encode`].
     Key(String),
 }

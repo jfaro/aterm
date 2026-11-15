@@ -4,12 +4,20 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    # Nightly rustfmt, for the unstable options in rustfmt.toml.
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = { self, nixpkgs, flake-utils }:
+  outputs = { self, nixpkgs, flake-utils, rust-overlay }:
     flake-utils.lib.eachDefaultSystem (system:
       let
-        pkgs = nixpkgs.legacyPackages.${system};
+        pkgs = import nixpkgs {
+          inherit system;
+          overlays = [ rust-overlay.overlays.default ];
+        };
         shellHook = "[[ $- == *i* ]] && exec fish || true";
       in {
         packages.default = pkgs.rustPlatform.buildRustPackage {
@@ -24,10 +32,11 @@
         devShells.default = pkgs.mkShell {
           inherit shellHook;
           packages = with pkgs; [
+            # Listed before the stable toolchain so `cargo fmt` finds it first.
+            (rust-bin.selectLatestNightlyWith (toolchain: toolchain.rustfmt))
             cargo
             rustc
             clippy
-            rustfmt
             rust-analyzer
           ];
         };

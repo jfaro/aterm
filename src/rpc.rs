@@ -3,21 +3,33 @@
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::os::unix::process::CommandExt;
-use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::process::Command;
+use std::process::Stdio;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::Context;
+use anyhow::Result;
+use anyhow::anyhow;
+use anyhow::bail;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::AsyncBufReadExt;
+use tokio::io::AsyncWriteExt;
+use tokio::io::BufReader;
 use tokio::net::UnixStream;
 use tokio::net::unix::OwnedWriteHalf;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 
 use crate::paths;
-use crate::protocol::{Event, Request, Response, ServerMessage};
+use crate::protocol::Event;
+use crate::protocol::Request;
+use crate::protocol::Response;
+use crate::protocol::ServerMessage;
 
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Response>>>>;
 

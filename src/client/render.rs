@@ -1,13 +1,24 @@
 //! Pure rendering: draws a [`View`] and never mutates it.
 
 use ratatui::Frame;
-use ratatui::layout::{Position, Rect};
-use ratatui::style::{Color, Modifier, Style, Stylize};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
-use tui_term::widget::{Cursor, PseudoTerminal};
+use ratatui::layout::Position;
+use ratatui::layout::Rect;
+use ratatui::style::Color;
+use ratatui::style::Modifier;
+use ratatui::style::Style;
+use ratatui::style::Stylize;
+use ratatui::text::Line;
+use ratatui::text::Span;
+use ratatui::widgets::Block;
+use ratatui::widgets::Borders;
+use ratatui::widgets::Paragraph;
+use tui_term::widget::Cursor;
+use tui_term::widget::PseudoTerminal;
 
-use super::view::{Areas, Mode, View, areas};
+use super::view::Areas;
+use super::view::Mode;
+use super::view::View;
+use super::view::areas;
 use crate::detect::AgentState;
 use crate::protocol::PaneInfo;
 

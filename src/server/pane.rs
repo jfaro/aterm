@@ -1,12 +1,21 @@
 //! Pane runtime: the PTY, the child process and the terminal emulator fed by it.
 
-use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::io::Read;
+use std::io::Write;
+use std::path::Path;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 
-use anyhow::{Context, Result};
-use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
+use anyhow::Context;
+use anyhow::Result;
+use portable_pty::Child;
+use portable_pty::CommandBuilder;
+use portable_pty::MasterPty;
+use portable_pty::PtySize;
+use portable_pty::native_pty_system;
 
 use crate::protocol::PaneId;
 
@@ -17,7 +26,9 @@ pub type PtyWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 /// Emulated terminal state of one pane. Shared between the PTY reader thread
 /// (which feeds it) and the server (which reads snapshots from it).
 pub struct Terminal {
+    /// Emulator state; locked briefly for every write and read.
     parser: Mutex<vt100::Parser<TerminalCallbacks>>,
+
     /// Bumped after every chunk of output; observers compare it to detect change.
     output_seq: AtomicU64,
 }

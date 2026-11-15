@@ -1,19 +1,23 @@
 //! Client presentation state: pure data, mutated only by the event loop.
 
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::Constraint;
+use ratatui::layout::Layout;
+use ratatui::layout::Rect;
 
-use crate::protocol::{PaneId, PaneInfo};
+use crate::protocol::PaneId;
+use crate::protocol::PaneInfo;
 
 pub const SIDEBAR_WIDTH: u16 = 28;
 
 pub enum Mode {
+    /// Keys go to the focused pane.
     Normal,
+
     /// The prefix key was pressed; the next key is a client command.
     Prefix,
-    Prompt {
-        kind: PromptKind,
-        input: String,
-    },
+
+    /// Typing into the status-bar prompt.
+    Prompt { kind: PromptKind, input: String },
 }
 
 #[derive(Clone, Copy)]
@@ -32,11 +36,19 @@ impl PromptKind {
 }
 
 pub struct View {
+    /// Panes in sidebar order, as last fetched from the server.
     pub panes: Vec<PaneInfo>,
+
+    /// Pane shown and receiving keys.
     pub focused: Option<PaneId>,
+
     /// Local mirror of the focused pane's screen.
     pub screen: vt100::Parser,
+
+    /// How the next key is interpreted.
     pub mode: Mode,
+
+    /// Error shown in the status bar until the next key press.
     pub message: Option<String>,
 }
 

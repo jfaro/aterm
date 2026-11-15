@@ -8,21 +8,32 @@ use std::io::stdout;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Result, bail};
-use crossterm::event::{
-    self, DisableBracketedPaste, EnableBracketedPaste, KeyCode, KeyEvent, KeyEventKind,
-    KeyModifiers,
-};
+use anyhow::Result;
+use anyhow::bail;
+use crossterm::event::DisableBracketedPaste;
+use crossterm::event::EnableBracketedPaste;
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
+use crossterm::event::KeyEventKind;
+use crossterm::event::KeyModifiers;
+use crossterm::event::{self};
 use crossterm::execute;
 use ratatui::DefaultTerminal;
 use ratatui::layout::Rect;
-use serde_json::{Value, json};
+use serde_json::Value;
+use serde_json::json;
 use tokio::sync::mpsc;
 
-use crate::protocol::{Event, PaneId, PaneInfo, events};
+use crate::protocol::Event;
+use crate::protocol::PaneId;
+use crate::protocol::PaneInfo;
+use crate::protocol::events;
 use crate::rpc::Connection;
 use input::PaneInput;
-use view::{Mode, PromptKind, View, areas};
+use view::Mode;
+use view::PromptKind;
+use view::View;
+use view::areas;
 
 pub async fn attach() -> Result<()> {
     let (conn, server_events) = Connection::connect_or_spawn().await?;

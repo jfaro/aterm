@@ -12,11 +12,15 @@
 //!   - `bottom(N)`: the last N non-empty screen lines
 //!   - `screen`: every visible line
 
-use anyhow::{Context, Result, bail};
+use anyhow::Context;
+use anyhow::Result;
+use anyhow::bail;
 use regex::Regex;
 use serde::Deserialize;
 
-use super::{AgentState, Detection, Snapshot};
+use super::AgentState;
+use super::Detection;
+use super::Snapshot;
 
 const BUILTIN_MANIFESTS: &[&str] = &[
     include_str!("../../manifests/claude.toml"),

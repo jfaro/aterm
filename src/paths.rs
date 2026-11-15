@@ -1,5 +1,6 @@
 use std::os::unix::fs::DirBuilderExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 
 /// Socket the server listens on. `ATERM_SOCKET` overrides the default so
 /// multiple independent servers (e.g. tests) can coexist.

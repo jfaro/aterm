@@ -3,7 +3,8 @@
 use std::collections::BTreeMap;
 
 use crate::detect::Detection;
-use crate::protocol::{PaneId, PaneInfo};
+use crate::protocol::PaneId;
+use crate::protocol::PaneInfo;
 
 #[derive(Default)]
 pub struct AppState {

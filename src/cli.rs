@@ -5,29 +5,35 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use clap::Subcommand;
-use serde_json::{Value, json};
+use serde_json::Value;
+use serde_json::json;
 
 use crate::detect::AgentState;
-use crate::protocol::{PaneId, PaneInfo};
+use crate::protocol::PaneId;
+use crate::protocol::PaneInfo;
 use crate::rpc::Connection;
 
 #[derive(Subcommand)]
 pub enum Command {
     /// Run the server in the foreground (normally started automatically).
     Server {
+        /// What to do with the server; omit to run it.
         #[command(subcommand)]
         action: Option<ServerAction>,
     },
+
     /// Create, inspect and drive panes.
     Pane {
         #[command(subcommand)]
         action: PaneAction,
     },
+
     /// Wait on agent status.
     Agent {
         #[command(subcommand)]
         action: AgentAction,
     },
+
     /// Stream server events as JSON lines.
     Events,
 }
@@ -42,49 +48,75 @@ pub enum ServerAction {
 pub enum PaneAction {
     /// Start a pane running COMMAND (or your shell).
     Create {
+        /// Name shown in the sidebar; defaults to the program name.
         #[arg(long)]
         name: Option<String>,
+
         /// Working directory; defaults to the current one.
         #[arg(long)]
         cwd: Option<PathBuf>,
+
+        /// Command line to run, e.g. `claude --resume`.
         #[arg(trailing_var_arg = true)]
         command: Vec<String>,
     },
+
     /// List panes.
     List {
+        /// Print full pane details as JSON.
         #[arg(long)]
         json: bool,
     },
+
     /// Print a pane's visible screen.
     Read {
+        /// Pane to read.
         pane: PaneId,
+
         /// Only the last N non-blank lines.
         #[arg(long)]
         lines: Option<usize>,
+
         /// Include colors and cursor state as ANSI escapes.
         #[arg(long)]
         ansi: bool,
     },
+
     /// Type literal text into a pane.
     SendText {
+        /// Pane to type into.
         pane: PaneId,
+
+        /// Text to type, sent as-is.
         text: String,
+
         /// Press enter afterwards.
         #[arg(long)]
         enter: bool,
     },
+
     /// Press named keys, e.g. `enter`, `ctrl-c`, `alt-left`, `up`.
     SendKeys {
+        /// Pane to send the keys to.
         pane: PaneId,
+
+        /// Keys to press, in order.
         #[arg(required = true)]
         keys: Vec<String>,
     },
+
+    /// Rename a pane.
     Rename {
+        /// Pane to rename.
         pane: PaneId,
+
+        /// New name.
         name: String,
     },
+
     /// Kill a pane's process and remove it.
     Close {
+        /// Pane to close.
         pane: PaneId,
     },
 }
@@ -93,9 +125,13 @@ pub enum PaneAction {
 pub enum AgentAction {
     /// Block until the agent in PANE reaches STATUS.
     Wait {
+        /// Pane whose agent to watch.
         pane: PaneId,
+
+        /// Status to wait for.
         #[arg(long, value_enum)]
         status: AgentState,
+
         /// Give up after this many seconds.
         #[arg(long)]
         timeout: Option<f64>,
