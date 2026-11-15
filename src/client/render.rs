@@ -4,6 +4,7 @@ use std::time::Duration;
 use std::time::SystemTime;
 
 use ratatui::Frame;
+use ratatui::layout::Margin;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
@@ -14,6 +15,7 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Block;
 use ratatui::widgets::Borders;
+use ratatui::widgets::Clear;
 use ratatui::widgets::Paragraph;
 use tui_term::widget::Cursor;
 use tui_term::widget::PseudoTerminal;
@@ -26,9 +28,43 @@ use crate::detect::AgentState;
 use crate::protocol::PaneInfo;
 use crate::protocol::unix_millis;
 
-const HINTS: &str = " ctrl-b  c shell · a command · n/p switch · J/K move · r rename · x close · \
-                     </> resize · b sidebar · d detach";
+/// One-line summary for the status bar. `? help` comes first so it survives truncation on
+/// narrow screens, where [`HELP`] is the full reference.
+const HINTS: &str = " ctrl-b  ? help · c shell · a command · n/p switch · J/K move · r rename · \
+                     x close · </> resize · b sidebar · d detach";
 const RESIZE_HINTS: &str = " resize  ←/→ adjust · shift ±8 · = reset · esc done";
+
+/// Sections of the help popup: a heading, then (keys, action) rows.
+const HELP: &[(&str, &[(&str, &str)])] = &[
+    (
+        "ctrl-b, then",
+        &[
+            ("c", "new shell pane"),
+            ("a", "new pane running a command"),
+            ("n / j / ↓", "next pane"),
+            ("p / k / ↑", "previous pane"),
+            ("1–9", "focus pane by position"),
+            ("J / shift-↓", "move pane down"),
+            ("K / shift-↑", "move pane up"),
+            ("r", "rename pane"),
+            ("x", "close pane"),
+            ("< / >", "resize sidebar"),
+            ("b", "hide/show sidebar"),
+            ("d / q", "detach"),
+            ("ctrl-b", "send a literal ctrl-b"),
+            ("?", "show this help"),
+        ],
+    ),
+    (
+        "resize mode",
+        &[
+            ("← / → / h / l", "adjust by 2"),
+            ("shift / H / L", "adjust by 8"),
+            ("=", "reset width"),
+            ("any other key", "done"),
+        ],
+    ),
+];
 
 /// Draws `view` as of `now`, which dates the sidebar's status durations.
 pub fn render(frame: &mut Frame, view: &View, now: SystemTime) {
@@ -42,6 +78,58 @@ pub fn render(frame: &mut Frame, view: &View, now: SystemTime) {
     }
     render_pane(frame, pane, view);
     render_status(frame, status, view);
+    if sidebar.width > 0 {
+        let junction = Position::new(sidebar.right() - 1, status.y);
+        if let Some(cell) = frame.buffer_mut().cell_mut(junction) {
+            cell.set_symbol("┴");
+        }
+    }
+    if matches!(view.mode, Mode::Help) {
+        render_help(frame, frame.area());
+    }
+}
+
+/// Draws [`HELP`] in a bordered popup centered on `area`, clipped if `area` is too small.
+fn render_help(frame: &mut Frame, area: Rect) {
+    let key_width = HELP
+        .iter()
+        .flat_map(|(_, rows)| rows.iter())
+        .map(|(keys, _)| keys.chars().count())
+        .max()
+        .unwrap_or(0);
+
+    let mut lines = Vec::new();
+    for (index, (heading, rows)) in HELP.iter().enumerate() {
+        if index > 0 {
+            lines.push(Line::default());
+        }
+        lines.push(Line::from(Span::styled(*heading, Style::new().bold())));
+        for (keys, action) in rows.iter() {
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {keys:<key_width$}  "), Style::new().cyan()),
+                Span::raw(*action),
+            ]));
+        }
+    }
+
+    let content_width = lines.iter().map(Line::width).max().unwrap_or(0) as u16;
+    let block = Block::bordered()
+        .border_style(Style::new().dark_gray())
+        .title(" help ".bold())
+        .title_bottom(" any key to close ".dark_gray());
+    let width = (content_width + 4).min(area.width);
+    let height = (lines.len() as u16 + 2).min(area.height);
+    let popup = Rect {
+        x: area.x + (area.width - width) / 2,
+        y: area.y + (area.height - height) / 2,
+        width,
+        height,
+    };
+
+    let inner = block.inner(popup).inner(Margin::new(1, 0));
+    frame.render_widget(Clear, popup);
+    frame.render_widget(block, popup);
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn render_sidebar(frame: &mut Frame, area: Rect, view: &View, now_ms: u64) {
@@ -160,6 +248,26 @@ mod tests {
         assert_eq!(format(86_399), "23h");
         assert_eq!(format(86_400 * 3), "3d");
     }
+
+    fn draw_help(width: u16, height: u16) -> String {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| render_help(frame, frame.area()))
+            .unwrap();
+        terminal.backend().to_string()
+    }
+
+    #[test]
+    fn help_lists_every_action_and_fits_tiny_screens() {
+        let screen = draw_help(80, 30);
+        for (_, rows) in HELP {
+            for (_, action) in rows.iter() {
+                assert!(screen.contains(action), "{action} missing from:\n{screen}");
+            }
+        }
+        draw_help(3, 2);
+    }
 }
 
 fn render_pane(frame: &mut Frame, area: Rect, view: &View) {
@@ -191,6 +299,15 @@ fn render_pane(frame: &mut Frame, area: Rect, view: &View) {
 }
 
 fn render_status(frame: &mut Frame, area: Rect, view: &View) {
+    let block = Block::new()
+        .borders(Borders::TOP)
+        .border_style(Style::new().dark_gray());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    render_status_line(frame, inner, view);
+}
+
+fn render_status_line(frame: &mut Frame, area: Rect, view: &View) {
     let line = match &view.mode {
         Mode::Prompt { kind, input } => {
             let prefix = format!(" {}: ", kind.label());
@@ -205,6 +322,7 @@ fn render_status(frame: &mut Frame, area: Rect, view: &View) {
             ])
         }
         Mode::Prefix => Line::from(Span::styled(HINTS, Style::new().black().on_cyan())),
+        Mode::Help => Line::from(Span::styled(HINTS, Style::new().dark_gray())),
         Mode::Resize => {
             let width = view.sidebar.width_on(area.width);
             Line::from(vec![

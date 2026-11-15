@@ -191,6 +191,7 @@ impl App {
             }
             Mode::Prefix => self.on_prefix_command(key).await,
             Mode::Resize => self.on_resize_key(key),
+            Mode::Help => {}
             Mode::Prompt { kind, mut input } => match key.code {
                 KeyCode::Esc => {}
                 KeyCode::Enter => self.submit_prompt(kind, input).await,
@@ -297,6 +298,7 @@ impl App {
                 self.relayout();
             }
             KeyCode::Char('d' | 'q') => self.quit = true,
+            KeyCode::Char('?') => self.view.mode = Mode::Help,
             _ => {}
         }
     }

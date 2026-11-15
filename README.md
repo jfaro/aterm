@@ -50,6 +50,7 @@ Prefix is `ctrl-b`, followed by:
 | `b`           | hide/show sidebar                      |
 | `d`/`q`       | detach (panes keep running)            |
 | `ctrl-b`      | send a literal `ctrl-b`                |
+| `?`           | show all keys (any key closes it)      |
 
 In resize mode, `<`/`>`, `h`/`l` or `←`/`→` keep resizing by 2 columns
 (`H`/`L` or `shift-←`/`shift-→` by 8), `=` resets to the default width, and

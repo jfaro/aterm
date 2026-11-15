@@ -25,6 +25,9 @@ pub enum Mode {
 
     /// Adjusting the sidebar width; keys keep resizing until one ends the mode.
     Resize,
+
+    /// Showing the key reference; any key closes it without reaching the pane.
+    Help,
 }
 
 #[derive(Clone, Copy)]
@@ -179,9 +182,12 @@ pub struct Areas {
     pub status: Rect,
 }
 
+/// Height of the status bar, including its top border.
+const STATUS_HEIGHT: u16 = 2;
+
 pub fn areas(screen: Rect, sidebar: &Sidebar) -> Areas {
     let [main, status] =
-        Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(screen);
+        Layout::vertical([Constraint::Min(1), Constraint::Length(STATUS_HEIGHT)]).areas(screen);
     let sidebar_width = sidebar.width_on(screen.width);
     let [sidebar, pane] =
         Layout::horizontal([Constraint::Length(sidebar_width), Constraint::Min(1)]).areas(main);
