@@ -1,9 +1,12 @@
 //! Client presentation state: pure data, mutated only by the event loop.
 
+use std::time::SystemTime;
+
 use ratatui::layout::Constraint;
 use ratatui::layout::Layout;
 use ratatui::layout::Rect;
 
+use super::selection::Selection;
 use crate::protocol::FolderId;
 use crate::protocol::FolderInfo;
 use crate::protocol::PaneId;
@@ -49,6 +52,11 @@ impl PromptKind {
             Self::RenameFolder(_) => "rename folder",
         }
     }
+}
+
+pub struct Toast {
+    pub text: String,
+    pub until: SystemTime,
 }
 
 pub struct Sidebar {
@@ -125,6 +133,12 @@ pub struct View {
     /// Whether the mirrored pane is on the alternate screen.
     pub alternate_screen: bool,
 
+    /// Text being or last dragged over in the pane, highlighted until cleared.
+    pub selection: Option<Selection>,
+
+    /// Brief notice shown in the pane's corner until it expires.
+    pub toast: Option<Toast>,
+
     /// How the next key is interpreted.
     pub mode: Mode,
 
@@ -146,6 +160,8 @@ impl View {
             screen_pane: None,
             scrollback: 0,
             alternate_screen: false,
+            selection: None,
+            toast: None,
             mode: Mode::Normal,
             message: None,
             sidebar,

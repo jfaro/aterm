@@ -46,6 +46,7 @@ pub fn translate(key: &KeyEvent) -> Option<PaneInput> {
         KeyCode::F(n) => format!("f{n}"),
         _ => return None,
     };
+
     Some(PaneInput::Key(format!("{alt_prefix}{named}")))
 }
 

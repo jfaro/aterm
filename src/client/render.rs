@@ -14,12 +14,14 @@ use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Block;
+use ratatui::widgets::BorderType;
 use ratatui::widgets::Borders;
 use ratatui::widgets::Clear;
 use ratatui::widgets::Paragraph;
 use tui_term::widget::Cursor;
 use tui_term::widget::PseudoTerminal;
 
+use super::selection::Selection;
 use super::view::Areas;
 use super::view::Mode;
 use super::view::Row;
@@ -87,9 +89,31 @@ pub fn render(frame: &mut Frame, view: &View, now: SystemTime) {
             cell.set_symbol("┴");
         }
     }
+    if let Some(toast) = &view.toast
+        && now < toast.until
+    {
+        render_toast(frame, pane, &toast.text);
+    }
     if matches!(view.mode, Mode::Help) {
         render_help(frame, frame.area());
     }
+}
+
+/// Draws `text` in a small bordered box in the bottom-right corner of `area`,
+/// or nothing if `area` is too small to hold it.
+fn render_toast(frame: &mut Frame, area: Rect, text: &str) {
+    let width = text.chars().count() as u16 + 4;
+    let height = 3;
+    if area.width < width || area.height < height {
+        return;
+    }
+    let popup = Rect::new(area.right() - width, area.bottom() - height, width, height);
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().green());
+    let message = Paragraph::new(text).green().centered().block(block);
+    frame.render_widget(Clear, popup);
+    frame.render_widget(message, popup);
 }
 
 /// Draws [`HELP`] in a bordered popup centered on `area`, clipped if `area` is too small.
@@ -323,6 +347,66 @@ mod tests {
     }
 
     #[test]
+    fn toast_sits_in_the_bottom_right_corner() {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(12, 4)).unwrap();
+        terminal
+            .draw(|frame| render_toast(frame, frame.area(), "copied"))
+            .unwrap();
+        let lines: Vec<String> = terminal
+            .backend()
+            .buffer()
+            .content()
+            .chunks(12)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect())
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                "            ",
+                "  ╭────────╮",
+                "  │ copied │",
+                "  ╰────────╯",
+            ]
+        );
+
+        // Too small to fit: draws nothing rather than a clipped box.
+        terminal
+            .draw(|frame| render_toast(frame, Rect::new(0, 0, 6, 4), "copied"))
+            .unwrap();
+        assert!(
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .all(|c| c.symbol() == " ")
+        );
+    }
+
+    #[test]
+    fn selection_reverses_only_the_cells_it_covers() {
+        let area = Rect::new(2, 1, 4, 3);
+        let selection = Selection {
+            anchor: Position::new(3, 0),
+            head: Position::new(1, 1),
+            dragging: false,
+        };
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(8, 5)).unwrap();
+        terminal
+            .draw(|frame| highlight_selection(frame, area, selection))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let reversed: Vec<(u16, u16)> = (0..5)
+            .flat_map(|y| (0..8).map(move |x| (x, y)))
+            .filter(|&(x, y)| buffer[(x, y)].modifier.contains(Modifier::REVERSED))
+            .collect();
+        assert_eq!(reversed, [(5, 1), (2, 2), (3, 2)]);
+    }
+
+    #[test]
     fn sidebar_shows_folders_after_top_level_panes() {
         let pane = |id, folder| PaneInfo {
             id,
@@ -394,6 +478,9 @@ fn render_pane(frame: &mut Frame, area: Rect, view: &View) {
     let mut cursor = Cursor::default();
     cursor.hide();
     frame.render_widget(PseudoTerminal::new(screen).cursor(cursor), area);
+    if let Some(selection) = view.selection {
+        highlight_selection(frame, area, selection);
+    }
 
     if matches!(view.mode, Mode::Normal)
         && view.scrollback == 0
@@ -403,6 +490,21 @@ fn render_pane(frame: &mut Frame, area: Rect, view: &View) {
         let (row, col) = screen.cursor_position();
         if row < area.height && col < area.width {
             frame.set_cursor_position(Position::new(area.x + col, area.y + row));
+        }
+    }
+}
+
+/// Reverses the cells of `area` that `selection`, in `area`-relative cells, covers.
+fn highlight_selection(frame: &mut Frame, area: Rect, selection: Selection) {
+    let buffer = frame.buffer_mut();
+    for row in 0..area.height {
+        for col in 0..area.width {
+            if !selection.contains(Position::new(col, row)) {
+                continue;
+            }
+            if let Some(cell) = buffer.cell_mut(Position::new(area.x + col, area.y + row)) {
+                cell.set_style(Style::new().add_modifier(Modifier::REVERSED));
+            }
         }
     }
 }

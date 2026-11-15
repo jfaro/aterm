@@ -2,8 +2,10 @@
 
 mod input;
 mod render;
+mod selection;
 mod view;
 
+use std::io::Write;
 use std::io::stdout;
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,6 +20,7 @@ use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
 use crossterm::event::KeyModifiers;
+use crossterm::event::MouseButton;
 use crossterm::event::MouseEvent;
 use crossterm::event::MouseEventKind;
 use crossterm::event::{self};
@@ -36,15 +39,20 @@ use crate::protocol::PaneInfo;
 use crate::protocol::events;
 use crate::rpc::Connection;
 use input::PaneInput;
+use selection::Selection;
 pub use view::DEFAULT_SIDEBAR_WIDTH;
 pub use view::MIN_SIDEBAR_WIDTH;
 use view::Mode;
 use view::PromptKind;
 use view::Sidebar;
+use view::Toast;
 use view::View;
 use view::areas;
 
 const CLOCK_TICK: Duration = Duration::from_secs(1);
+
+/// How long a toast stays in the pane's corner.
+const TOAST_DURATION: Duration = Duration::from_millis(1500);
 
 /// Sidebar columns gained or lost per resize key, and with shift held.
 const RESIZE_STEP: i16 = 2;
@@ -58,26 +66,27 @@ pub async fn attach(sidebar_width: u16) -> Result<()> {
     conn.call("events.subscribe", json!({})).await?;
 
     let mut terminal = ratatui::init();
-    let _ = execute!(stdout(), EnableBracketedPaste, WheelReporting(true));
+    let _ = execute!(stdout(), EnableBracketedPaste, MouseReporting(true));
     let result = App::new(conn, Sidebar::new(sidebar_width))
         .run(&mut terminal, server_events)
         .await;
-    let _ = execute!(stdout(), WheelReporting(false), DisableBracketedPaste);
+    let _ = execute!(stdout(), MouseReporting(false), DisableBracketedPaste);
     ratatui::restore();
     result
 }
 
-/// Turns SGR mouse button reporting on or off. Unlike crossterm's mouse
-/// capture it leaves motion unreported, so moving the mouse costs no redraws.
-/// Without it, the outer terminal turns the wheel into arrow keys.
-struct WheelReporting(bool);
+/// Turns SGR reporting of mouse buttons, and of motion while one is held, on or
+/// off. Unlike crossterm's mouse capture it leaves bare motion unreported, so
+/// moving the mouse costs no redraws. Without it, the outer terminal turns the
+/// wheel into arrow keys.
+struct MouseReporting(bool);
 
-impl Command for WheelReporting {
+impl Command for MouseReporting {
     fn write_ansi(&self, f: &mut impl std::fmt::Write) -> std::fmt::Result {
         f.write_str(if self.0 {
-            "\x1b[?1000h\x1b[?1006h"
+            "\x1b[?1000h\x1b[?1002h\x1b[?1006h"
         } else {
-            "\x1b[?1006l\x1b[?1000l"
+            "\x1b[?1006l\x1b[?1002l\x1b[?1000l"
         })
     }
 }
@@ -131,11 +140,21 @@ impl App {
                 .panes
                 .iter()
                 .any(|p| render::is_animated(p.status));
-            let tick = if animating {
+            let mut tick = if animating {
                 render::ANIMATION_FRAME
             } else {
                 CLOCK_TICK
             };
+            // Wakes when the toast expires so it disappears on time.
+            if let Some(toast) = &self.view.toast {
+                match toast.until.duration_since(SystemTime::now()) {
+                    Ok(remaining) => tick = tick.min(remaining),
+                    Err(_) => {
+                        self.view.toast = None;
+                        continue;
+                    }
+                }
+            }
 
             tokio::select! {
                 _ = tokio::time::sleep(tick) => {}
@@ -183,6 +202,7 @@ impl App {
 
     async fn on_key(&mut self, key: KeyEvent) {
         self.view.message = None;
+        self.view.selection = None;
         match std::mem::replace(&mut self.view.mode, Mode::Normal) {
             Mode::Normal if input::is_prefix(&key) => self.view.mode = Mode::Prefix,
             Mode::Normal => {
@@ -209,19 +229,97 @@ impl App {
         }
     }
 
+    async fn on_mouse(&mut self, mouse: MouseEvent) {
+        if !matches!(self.view.mode, Mode::Normal) {
+            return;
+        }
+        let position = Position::new(mouse.column, mouse.row);
+        match mouse.kind {
+            MouseEventKind::ScrollUp => self.on_wheel(true, position).await,
+            MouseEventKind::ScrollDown => self.on_wheel(false, position).await,
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.view.selection = self
+                    .view
+                    .focused
+                    .and(self.pane_cell(position))
+                    .map(Selection::start);
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                let head = self.clamped_pane_cell(position);
+                if let Some(selection) = &mut self.view.selection
+                    && selection.dragging
+                {
+                    selection.head = head;
+                }
+            }
+            MouseEventKind::Up(MouseButton::Left) => self.finish_selection(),
+            _ => {}
+        }
+    }
+
+    /// The pane-relative cell at screen `position`, if it is over the pane.
+    fn pane_cell(&self, position: Position) -> Option<Position> {
+        self.pane_area
+            .contains(position)
+            .then(|| Position::new(position.x - self.pane_area.x, position.y - self.pane_area.y))
+    }
+
+    /// The pane-relative cell nearest screen `position`, so drags past an edge stop at it.
+    fn clamped_pane_cell(&self, position: Position) -> Position {
+        let area = self.pane_area;
+        Position::new(
+            position
+                .x
+                .saturating_sub(area.x)
+                .min(area.width.saturating_sub(1)),
+            position
+                .y
+                .saturating_sub(area.y)
+                .min(area.height.saturating_sub(1)),
+        )
+    }
+
+    /// Ends a drag, copying what it covered; a click without a drag selects nothing.
+    fn finish_selection(&mut self) {
+        let Some(selection) = &mut self.view.selection else {
+            return;
+        };
+        if !selection.dragging {
+            return;
+        }
+        selection.dragging = false;
+        if selection.is_empty() {
+            self.view.selection = None;
+            return;
+        }
+
+        let text = selection.text(self.view.screen.screen());
+        if text.is_empty() {
+            return;
+        }
+        let mut out = stdout();
+        let copied = out
+            .write_all(selection::osc52(&text).as_bytes())
+            .and_then(|()| out.flush());
+        match copied {
+            Ok(()) => {
+                self.view.toast = Some(Toast {
+                    text: "copied to clipboard".into(),
+                    until: SystemTime::now() + TOAST_DURATION,
+                });
+            }
+            Err(err) => self.view.message = Some(format!("copy failed: {err}")),
+        }
+    }
+
     /// Routes the wheel over the pane the way a terminal would: to the program
     /// if it asked for mouse reports, as arrow keys on the alternate screen
     /// (which has no history), and otherwise through the pane's scrollback.
-    async fn on_mouse(&mut self, mouse: MouseEvent) {
-        let up = match mouse.kind {
-            MouseEventKind::ScrollUp => true,
-            MouseEventKind::ScrollDown => false,
-            _ => return,
-        };
-        let position = Position::new(mouse.column, mouse.row);
-        if !matches!(self.view.mode, Mode::Normal) || !self.pane_area.contains(position) {
+    async fn on_wheel(&mut self, up: bool, position: Position) {
+        if !self.pane_area.contains(position) {
             return;
         }
+        self.view.selection = None;
 
         if self.view.scrollback == 0 {
             let (col, row) = (position.x - self.pane_area.x, position.y - self.pane_area.y);
@@ -356,6 +454,7 @@ impl App {
         let pane_area = areas(self.screen_area, &self.view.sidebar).pane;
         if pane_area != self.pane_area {
             self.pane_area = pane_area;
+            self.view.selection = None;
             self.list_dirty = true;
             self.screen_dirty = true;
         }
@@ -510,6 +609,12 @@ impl App {
                 }
                 Err(_) => self.list_dirty = true,
             }
+        }
+        // A finished selection would now highlight whatever moved under it, but
+        // one still being dragged survives output so a busy pane can't break it.
+        let dragging = self.view.selection.is_some_and(|s| s.dragging);
+        if !dragging || pane != self.view.screen_pane {
+            self.view.selection = None;
         }
         self.view.screen = screen;
         self.view.screen_pane = pane;
