@@ -76,17 +76,12 @@ fn sidebar_row(
     width: u16,
     now_ms: u64,
 ) -> Line<'static> {
-    let (dot, color, state) = match pane.status {
-        AgentState::Working => ("●", Color::Yellow, "working"),
-        AgentState::Blocked => ("●", Color::Red, "blocked"),
-        AgentState::Idle => ("●", Color::Green, "idle"),
-        AgentState::Unknown => ("○", Color::DarkGray, ""),
-    };
-    let label = if state.is_empty() {
-        String::new()
-    } else {
-        let elapsed = Duration::from_millis(now_ms.saturating_sub(pane.status_since));
-        format!("{state} {}", format_elapsed(elapsed))
+    let (icon, color) = status_icon(pane.status, now_ms);
+    let label = match pane.status {
+        AgentState::Unknown => String::new(),
+        _ => format_elapsed(Duration::from_millis(
+            now_ms.saturating_sub(pane.status_since),
+        )),
     };
     let marker = if focused { "▌" } else { " " };
     let name_width = (width as usize).saturating_sub(4 + 1 + label.len() + 1);
@@ -102,10 +97,41 @@ fn sidebar_row(
 
     Line::from(vec![
         Span::styled(marker, Style::new().cyan()),
-        Span::styled(format!("{dot} "), Style::new().fg(color)),
+        Span::styled(format!("{icon} "), Style::new().fg(color)),
         Span::styled(format!("{name:<name_width$} "), row_style),
         Span::styled(label, Style::new().fg(color)),
     ])
+}
+
+/// Spinner frames for a working agent, advanced every [`ANIMATION_FRAME`].
+const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+/// How often animated status icons advance.
+pub const ANIMATION_FRAME: Duration = Duration::from_millis(100);
+
+/// Blocked agents blink, toggling once per this many animation frames.
+const BLINK_FRAMES: u64 = 5;
+
+/// Whether `state` is drawn with an animated icon, so the sidebar needs
+/// redrawing every [`ANIMATION_FRAME`].
+pub fn is_animated(state: AgentState) -> bool {
+    matches!(state, AgentState::Working | AgentState::Blocked)
+}
+
+/// One-column icon for `state`, animated off the wall clock so every pane in
+/// the same state moves in step.
+fn status_icon(state: AgentState, now_ms: u64) -> (&'static str, Color) {
+    let frame = now_ms / ANIMATION_FRAME.as_millis() as u64;
+    match state {
+        AgentState::Working => (
+            SPINNER[(frame % SPINNER.len() as u64) as usize],
+            Color::Yellow,
+        ),
+        AgentState::Blocked if (frame / BLINK_FRAMES).is_multiple_of(2) => ("●", Color::Red),
+        AgentState::Blocked => ("○", Color::Red),
+        AgentState::Idle => ("●", Color::Green),
+        AgentState::Unknown => ("○", Color::DarkGray),
+    }
 }
 
 /// Compact elapsed time in the largest whole unit: `42s`, `5m`, `3h`, `2d`.

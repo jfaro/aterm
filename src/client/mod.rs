@@ -24,7 +24,6 @@ use ratatui::layout::Rect;
 use serde_json::Value;
 use serde_json::json;
 use tokio::sync::mpsc;
-use tokio::time::MissedTickBehavior;
 
 use crate::protocol::Event;
 use crate::protocol::PaneId;
@@ -92,9 +91,6 @@ impl App {
         let size = terminal.size()?;
         self.screen_area = Rect::new(0, 0, size.width, size.height);
         self.relayout();
-        // Redraws periodically so the sidebar's status durations keep counting.
-        let mut clock = tokio::time::interval(CLOCK_TICK);
-        clock.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
         while !self.quit {
             if self.list_dirty {
@@ -105,8 +101,21 @@ impl App {
             }
             terminal.draw(|frame| render::render(frame, &self.view, SystemTime::now()))?;
 
+            // Redraws periodically so status icons animate and durations keep
+            // counting.
+            let animating = self
+                .view
+                .panes
+                .iter()
+                .any(|p| render::is_animated(p.status));
+            let tick = if animating {
+                render::ANIMATION_FRAME
+            } else {
+                CLOCK_TICK
+            };
+
             tokio::select! {
-                _ = clock.tick() => {}
+                _ = tokio::time::sleep(tick) => {}
                 Some(event) = terminal_events.recv() => self.on_terminal_event(event).await,
                 event = server_events.recv() => match event {
                     Some(event) => self.on_server_event(&event),
