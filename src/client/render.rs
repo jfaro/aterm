@@ -32,10 +32,15 @@ use crate::protocol::FolderInfo;
 use crate::protocol::PaneInfo;
 use crate::protocol::unix_millis;
 
+/// Muted text and borders use this gray rather than the terminal's ANSI bright-
+/// black, which some themes map to the same color as the background
+const MUTED: Color = Color::Rgb(120, 120, 120);
+
 /// One-line summary for the status bar. `? help` comes first so it survives truncation on
 /// narrow screens, where [`HELP`] is the full reference.
 const HINTS: &str = " ctrl-b  ? help · c shell · a command · f folder · n/p switch · J/K move · \
                      r rename · x close · </> resize · b sidebar · d detach";
+
 const RESIZE_HINTS: &str = " resize  ←/→ adjust · shift ±8 · = reset · esc done";
 
 /// Sections of the help popup: a heading, then (keys, action) rows.
@@ -141,9 +146,9 @@ fn render_help(frame: &mut Frame, area: Rect) {
 
     let content_width = lines.iter().map(Line::width).max().unwrap_or(0) as u16;
     let block = Block::bordered()
-        .border_style(Style::new().dark_gray())
+        .border_style(Style::new().fg(MUTED))
         .title(" help ".bold())
-        .title_bottom(" any key to close ".dark_gray());
+        .title_bottom(Span::styled(" any key to close ", Style::new().fg(MUTED)));
     let width = (content_width + 4).min(area.width);
     let height = (lines.len() as u16 + 2).min(area.height);
     let popup = Rect {
@@ -162,7 +167,7 @@ fn render_help(frame: &mut Frame, area: Rect) {
 fn render_sidebar(frame: &mut Frame, area: Rect, view: &View, now_ms: u64) {
     let block = Block::new()
         .borders(Borders::RIGHT)
-        .border_style(Style::new().dark_gray());
+        .border_style(Style::new().fg(MUTED));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -215,9 +220,9 @@ fn folder_row(folder: &FolderInfo, pane_count: usize, selected: bool, width: u16
 
     Line::from(vec![
         Span::styled(marker, Style::new().cyan()),
-        Span::styled("▾ ", Style::new().dark_gray()),
+        Span::styled("▾ ", Style::new().fg(MUTED)),
         Span::styled(format!("{name:<name_width$} "), Style::new().bold()),
-        Span::styled(count, Style::new().dark_gray()),
+        Span::styled(count, Style::new().fg(MUTED)),
     ])
 }
 
@@ -295,7 +300,7 @@ fn status_icon(state: AgentState, now_ms: u64) -> (&'static str, Color) {
         AgentState::Blocked if (frame / BLINK_FRAMES).is_multiple_of(2) => ("●", Color::Red),
         AgentState::Blocked => ("○", Color::Red),
         AgentState::Idle => ("●", Color::Green),
-        AgentState::Unknown => ("○", Color::DarkGray),
+        AgentState::Unknown => ("○", MUTED),
     }
 }
 
@@ -463,7 +468,7 @@ fn render_pane(frame: &mut Frame, area: Rect, view: &View) {
     if view.focused.is_none() {
         let hint =
             Paragraph::new("no panes — press ctrl-b c for a shell, ctrl-b a to run a command")
-                .dark_gray()
+                .fg(MUTED)
                 .centered();
         let middle = Rect {
             y: area.y + area.height / 2,
@@ -512,7 +517,7 @@ fn highlight_selection(frame: &mut Frame, area: Rect, selection: Selection) {
 fn render_status(frame: &mut Frame, area: Rect, view: &View) {
     let block = Block::new()
         .borders(Borders::TOP)
-        .border_style(Style::new().dark_gray());
+        .border_style(Style::new().fg(MUTED));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     render_status_line(frame, inner, view);
@@ -537,7 +542,7 @@ fn render_status_line(frame: &mut Frame, area: Rect, view: &View) {
             Line::from(spans)
         }
         Mode::Prefix => Line::from(Span::styled(HINTS, Style::new().black().on_cyan())),
-        Mode::Help => Line::from(Span::styled(HINTS, Style::new().dark_gray())),
+        Mode::Help => Line::from(Span::styled(HINTS, Style::new().fg(MUTED))),
         Mode::Resize => {
             let width = view.sidebar.width_on(area.width);
             Line::from(vec![
@@ -564,7 +569,7 @@ fn render_status_line(frame: &mut Frame, area: Rect, view: &View) {
                 ),
                 Style::new().black().on_yellow(),
             )),
-            None => Line::from(Span::styled(HINTS, Style::new().dark_gray())),
+            None => Line::from(Span::styled(HINTS, Style::new().fg(MUTED))),
         },
     };
     frame.render_widget(Paragraph::new(line), area);
