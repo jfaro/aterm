@@ -181,28 +181,30 @@ fn render_sidebar(frame: &mut Frame, area: Rect, view: &View, now_ms: u64) {
     let selected = view.selected_row();
     // Pane numbers skip folder rows, matching `ctrl-b 1`–`9`.
     let mut pane_number = 0;
-    let lines: Vec<Line> = view
-        .rows()
-        .into_iter()
-        .filter_map(|row| match row {
+    let mut lines: Vec<Line> = Vec::new();
+    for row in view.rows() {
+        match row {
             Row::Folder(id) => {
-                let folder = view.folders.iter().find(|folder| folder.id == id)?;
+                let Some(folder) = view.folders.iter().find(|folder| folder.id == id) else {
+                    continue;
+                };
                 let count = view
                     .panes
                     .iter()
                     .filter(|pane| view.group_of(pane) == Some(id))
                     .count();
-                Some(folder_row(
-                    folder,
-                    count,
-                    selected == Some(row),
-                    inner.width,
-                ))
+                // Blank line between folder groups, but not before the first row.
+                if !lines.is_empty() {
+                    lines.push(Line::default());
+                }
+                lines.push(folder_row(folder, count, selected == Some(row), inner.width));
             }
             Row::Pane(id) => {
-                let pane = view.panes.iter().find(|pane| pane.id == id)?;
+                let Some(pane) = view.panes.iter().find(|pane| pane.id == id) else {
+                    continue;
+                };
                 pane_number += 1;
-                Some(sidebar_row(
+                lines.push(sidebar_row(
                     pane_number,
                     pane,
                     PaneRowStyle {
@@ -212,10 +214,10 @@ fn render_sidebar(frame: &mut Frame, area: Rect, view: &View, now_ms: u64) {
                     },
                     inner.width,
                     now_ms,
-                ))
+                ));
             }
-        })
-        .collect();
+        }
+    }
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
