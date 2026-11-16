@@ -45,12 +45,16 @@ const MUTED: Color = Color::Rgb(120, 120, 120);
 const SELECTED_BG: Color = Color::Rgb(40, 48, 64);
 
 /// One-line summary for the status bar, built from [`PREFIX_BINDINGS`] so it can't drift
-/// from the actual keys. `? help` comes first so it survives truncation on narrow screens,
-/// where [`HELP`] is the full reference.
+/// from the actual keys. Shown only while the prefix key is held down, since
+/// [`HELP`] is the full reference otherwise.
 static HINTS: LazyLock<String> = LazyLock::new(|| {
     let items: Vec<&str> = PREFIX_BINDINGS.iter().filter_map(|b| b.hint).collect();
     format!(" ctrl-b  {}", items.join(" · "))
 });
+
+/// Idle status-bar hint pointing at the full key reference, rather than
+/// restating every command.
+const HELP_HINT: &str = " ctrl-b ?  help";
 
 /// Resize-mode status bar summary, built from [`RESIZE_BINDINGS`].
 static RESIZE_HINTS: LazyLock<String> = LazyLock::new(|| {
@@ -551,7 +555,7 @@ fn render_status_line(frame: &mut Frame, area: Rect, view: &View) {
             Line::from(spans)
         }
         Mode::Prefix => Line::from(Span::styled(HINTS.as_str(), Style::new().black().on_cyan())),
-        Mode::Help => Line::from(Span::styled(HINTS.as_str(), Style::new().fg(MUTED))),
+        Mode::Help => Line::from(Span::styled(HELP_HINT, Style::new().fg(MUTED))),
         Mode::Resize => {
             let (label, size) = match view.sidebar.position {
                 SidebarPosition::Left => ("width", view.sidebar.width),
@@ -581,7 +585,7 @@ fn render_status_line(frame: &mut Frame, area: Rect, view: &View) {
                 ),
                 Style::new().black().on_yellow(),
             )),
-            None => Line::from(Span::styled(HINTS.as_str(), Style::new().fg(MUTED))),
+            None => Line::from(Span::styled(HELP_HINT, Style::new().fg(MUTED))),
         },
     };
     frame.render_widget(Paragraph::new(line), area);
