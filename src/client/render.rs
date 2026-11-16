@@ -40,6 +40,10 @@ use crate::protocol::unix_millis;
 /// black, which some themes map to the same color as the background
 const MUTED: Color = Color::Rgb(120, 120, 120);
 
+/// Background tint for the sidebar's selected row, so the selection is
+/// visible at a glance rather than just the thin marker bar.
+const SELECTED_BG: Color = Color::Rgb(40, 48, 64);
+
 /// One-line summary for the status bar, built from [`PREFIX_BINDINGS`] so it can't drift
 /// from the actual keys. `? help` comes first so it survives truncation on narrow screens,
 /// where [`HELP`] is the full reference.
@@ -213,15 +217,16 @@ fn render_sidebar(frame: &mut Frame, area: Rect, view: &View, now_ms: u64) {
 
 fn folder_row(folder: &FolderInfo, pane_count: usize, selected: bool, width: u16) -> Line<'static> {
     let marker = if selected { "▌" } else { " " };
+    let bg = if selected { SELECTED_BG } else { Color::Reset };
     let count = pane_count.to_string();
     let name_width = (width as usize).saturating_sub(1 + 2 + 1 + count.len());
     let name: String = folder.name.chars().take(name_width).collect();
 
     Line::from(vec![
-        Span::styled(marker, Style::new().cyan()),
-        Span::styled("▾ ", Style::new().fg(MUTED)),
-        Span::styled(format!("{name:<name_width$} "), Style::new().bold()),
-        Span::styled(count, Style::new().fg(MUTED)),
+        Span::styled(marker, Style::new().cyan().bg(bg)),
+        Span::styled("▾ ", Style::new().fg(MUTED).bg(bg)),
+        Span::styled(format!("{name:<name_width$} "), Style::new().bold().bg(bg)),
+        Span::styled(count, Style::new().fg(MUTED).bg(bg)),
     ])
 }
 
@@ -251,6 +256,11 @@ fn sidebar_row(
         )),
     };
     let marker = if style.selected { "▌" } else { " " };
+    let bg = if style.selected {
+        SELECTED_BG
+    } else {
+        Color::Reset
+    };
     let indent = if style.indented { " " } else { "" };
     let name_width = (width as usize).saturating_sub(4 + indent.len() + 1 + label.len() + 1);
     let name: String = format!("{number} {}", pane.name)
@@ -258,17 +268,17 @@ fn sidebar_row(
         .take(name_width)
         .collect();
     let row_style = if style.focused {
-        Style::new().add_modifier(Modifier::BOLD)
+        Style::new().add_modifier(Modifier::BOLD).bg(bg)
     } else {
-        Style::new()
+        Style::new().bg(bg)
     };
 
     Line::from(vec![
-        Span::styled(marker, Style::new().cyan()),
-        Span::raw(indent),
-        Span::styled(format!("{icon} "), Style::new().fg(color)),
+        Span::styled(marker, Style::new().cyan().bg(bg)),
+        Span::styled(indent, Style::new().bg(bg)),
+        Span::styled(format!("{icon} "), Style::new().fg(color).bg(bg)),
         Span::styled(format!("{name:<name_width$} "), row_style),
-        Span::styled(label, Style::new().fg(color)),
+        Span::styled(label, Style::new().fg(color).bg(bg)),
     ])
 }
 
