@@ -15,8 +15,15 @@ use crate::protocol::PaneInfo;
 pub const DEFAULT_SIDEBAR_WIDTH: u16 = 28;
 pub const MIN_SIDEBAR_WIDTH: u16 = 16;
 
-/// Columns or rows the pane keeps however large the sidebar is asked to be.
+/// Sidebar's minimum size in rows when docked at the bottom, where a
+/// terminal's height is usually far tighter than its width.
+pub const MIN_SIDEBAR_HEIGHT: u16 = 4;
+
+/// Columns the pane keeps when the sidebar runs down the side.
 const MIN_PANE_EXTENT: u16 = 20;
+
+/// Rows the pane keeps when the sidebar is docked at the bottom.
+const MIN_PANE_ROWS: u16 = 6;
 
 /// Where the sidebar is drawn relative to the pane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,25 +109,36 @@ impl Sidebar {
         }
     }
 
+    /// Minimum sidebar size and minimum pane size along the axis the current
+    /// position resizes on: columns when `Left`, rows when `Bottom`.
+    fn bounds(&self) -> (u16, u16) {
+        match self.position {
+            SidebarPosition::Left => (MIN_SIDEBAR_WIDTH, MIN_PANE_EXTENT),
+            SidebarPosition::Bottom => (MIN_SIDEBAR_HEIGHT, MIN_PANE_ROWS),
+        }
+    }
+
     /// Columns or rows the sidebar occupies along an axis `extent` cells long.
     pub fn width_on(&self, extent: u16) -> u16 {
         if !self.visible {
             return 0;
         }
-        self.width.min(extent.saturating_sub(MIN_PANE_EXTENT))
+        let (_, min_pane) = self.bounds();
+        self.width.min(extent.saturating_sub(min_pane))
     }
 
     /// Changes the width by `delta` cells, starting from what an axis `extent`
     /// cells long can show and staying within its bounds, and shows the
     /// sidebar.
     pub fn resize(&mut self, delta: i16, extent: u16) {
-        let max = extent.saturating_sub(MIN_PANE_EXTENT).max(MIN_SIDEBAR_WIDTH);
+        let (min_sidebar, min_pane) = self.bounds();
+        let max = extent.saturating_sub(min_pane).max(min_sidebar);
 
         self.width = self
             .width
             .min(max)
             .saturating_add_signed(delta)
-            .clamp(MIN_SIDEBAR_WIDTH, max);
+            .clamp(min_sidebar, max);
 
         self.visible = true;
     }
@@ -554,6 +572,21 @@ mod tests {
         assert_eq!(areas.sidebar.y, areas.pane.bottom());
         assert_eq!(areas.sidebar.height, DEFAULT_SIDEBAR_WIDTH);
         assert_eq!(areas.status.y, areas.sidebar.bottom());
+    }
+
+    #[test]
+    fn bottom_sidebar_resizes_on_a_typically_short_terminal() {
+        // A 24-row terminal is far shorter than `MIN_SIDEBAR_WIDTH +
+        // MIN_PANE_EXTENT`, which used to pin the resize bounds to a single
+        // value and make resizing a no-op.
+        let mut sidebar = Sidebar {
+            position: SidebarPosition::Bottom,
+            ..Sidebar::default()
+        };
+        sidebar.resize(-2, 24);
+        let shrunk = sidebar.width;
+        sidebar.resize(-2, 24);
+        assert!(sidebar.width < shrunk);
     }
 
     #[test]
