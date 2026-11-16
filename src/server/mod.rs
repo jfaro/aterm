@@ -1,5 +1,6 @@
 //! The aterm server: owns every pane and serves the JSON socket API.
 
+mod hvp;
 mod pane;
 mod state;
 

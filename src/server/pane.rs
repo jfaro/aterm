@@ -17,6 +17,7 @@ use portable_pty::MasterPty;
 use portable_pty::PtySize;
 use portable_pty::native_pty_system;
 
+use super::hvp::HvpRewriter;
 use crate::protocol::PaneId;
 
 const SCROLLBACK_LINES: usize = 10_000;
@@ -31,6 +32,9 @@ pub struct Terminal {
 
     /// Bumped after every chunk of output; observers compare it to detect change.
     output_seq: AtomicU64,
+
+    /// Translates output vt100 can't parse; only the PTY reader feeds it.
+    rewriter: Mutex<HvpRewriter>,
 }
 
 /// Captures what vt100 doesn't track itself: the window title, and replies to
@@ -92,13 +96,15 @@ impl Terminal {
                 TerminalCallbacks::default(),
             )),
             output_seq: AtomicU64::new(0),
+            rewriter: Mutex::default(),
         }
     }
 
     /// Feeds PTY output in and returns any replies owed to the program.
     fn process(&self, bytes: &[u8]) -> Vec<u8> {
+        let bytes = self.rewriter.lock().unwrap().rewrite(bytes);
         let mut parser = self.parser.lock().unwrap();
-        parser.process(bytes);
+        parser.process(&bytes);
         let replies = std::mem::take(&mut parser.callbacks_mut().replies);
         drop(parser);
         self.output_seq.fetch_add(1, Ordering::Release);
@@ -286,6 +292,14 @@ mod tests {
         let replies = terminal.process(b"\x1b[3;5Hhi\x1b[6n");
         assert_eq!(replies, b"\x1b[3;7R");
         assert!(terminal.text().contains("hi"));
+    }
+
+    #[test]
+    fn positions_with_hvp() {
+        let terminal = Terminal::new(3, 10);
+        terminal.process(b"\x1b[2;4fhi\x1b[1;1fok");
+        let (_, lines) = terminal.detection_snapshot();
+        assert_eq!(lines, vec!["ok", "   hi", ""]);
     }
 
     #[test]
