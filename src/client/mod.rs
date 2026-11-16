@@ -1,6 +1,7 @@
 //! The TUI: one client of the server, showing a pane list and the focused pane.
 
 mod input;
+mod keybindings;
 mod render;
 mod selection;
 mod view;
@@ -39,6 +40,8 @@ use crate::protocol::PaneInfo;
 use crate::protocol::events;
 use crate::rpc::Connection;
 use input::PaneInput;
+use keybindings::PrefixAction;
+use keybindings::ResizeAction;
 use selection::Selection;
 pub use view::DEFAULT_SIDEBAR_WIDTH;
 pub use view::MIN_SIDEBAR_WIDTH;
@@ -53,10 +56,6 @@ const CLOCK_TICK: Duration = Duration::from_secs(1);
 
 /// How long a toast stays in the pane's corner.
 const TOAST_DURATION: Duration = Duration::from_millis(1500);
-
-/// Sidebar columns gained or lost per resize key, and with shift held.
-const RESIZE_STEP: i16 = 2;
-const RESIZE_BIG_STEP: i16 = 8;
 
 /// Lines scrolled per wheel notch.
 const WHEEL_LINES: usize = 3;
@@ -346,24 +345,32 @@ impl App {
     }
 
     async fn on_prefix_command(&mut self, key: KeyEvent) {
-        match key.code {
-            _ if input::is_prefix(&key) => {
-                self.send_to_focused(PaneInput::Key("ctrl-b".into())).await
-            }
-            KeyCode::Char('c') => self.create_pane(None).await,
-            KeyCode::Char('a') => {
+        let Some(binding) = keybindings::PREFIX_BINDINGS
+            .iter()
+            .find(|b| (b.matches)(&key))
+        else {
+            return;
+        };
+        self.execute_prefix_action(&binding.action, &key).await;
+    }
+
+    async fn execute_prefix_action(&mut self, action: &PrefixAction, key: &KeyEvent) {
+        match action {
+            PrefixAction::Literal => self.send_to_focused(PaneInput::Key("ctrl-b".into())).await,
+            PrefixAction::NewShell => self.create_pane(None).await,
+            PrefixAction::NewCommand => {
                 self.view.mode = Mode::Prompt {
                     kind: PromptKind::NewPane,
                     input: String::new(),
                 };
             }
-            KeyCode::Char('f') => {
+            PrefixAction::NewFolder => {
                 self.view.mode = Mode::Prompt {
                     kind: PromptKind::NewFolder,
                     input: String::new(),
                 };
             }
-            KeyCode::Char('r') => {
+            PrefixAction::Rename => {
                 let prompt = match (self.view.selected_folder(), self.view.focused_pane()) {
                     (Some(folder), _) => Some((PromptKind::RenameFolder(folder.id), &folder.name)),
                     (None, Some(pane)) => Some((PromptKind::Rename, &pane.name)),
@@ -374,26 +381,19 @@ impl App {
                     self.view.mode = Mode::Prompt { kind, input };
                 }
             }
-            KeyCode::Char('J') => self.move_focused(1).await,
-            KeyCode::Char('K') => self.move_focused(-1).await,
-            KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                self.move_focused(1).await
-            }
-            KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                self.move_focused(-1).await
-            }
-            KeyCode::Char('n' | 'j') | KeyCode::Down => {
-                self.change_focus(|view| view.cycle_focus(1))
-            }
-            KeyCode::Char('p' | 'k') | KeyCode::Up => {
-                self.change_focus(|view| view.cycle_focus(-1))
-            }
-            KeyCode::Char(digit @ '1'..='9') => {
+            PrefixAction::MoveDown => self.move_focused(1).await,
+            PrefixAction::MoveUp => self.move_focused(-1).await,
+            PrefixAction::FocusNext => self.change_focus(|view| view.cycle_focus(1)),
+            PrefixAction::FocusPrev => self.change_focus(|view| view.cycle_focus(-1)),
+            PrefixAction::FocusIndex => {
+                let KeyCode::Char(digit @ '1'..='9') = key.code else {
+                    return;
+                };
                 let index = digit as usize - '1' as usize;
                 self.change_focus(|view| view.focus_index(index));
             }
             // Deleting a folder moves its panes to the top level; it never closes them.
-            KeyCode::Char('x') => match (self.view.selected_folder, self.view.focused) {
+            PrefixAction::CloseOrDelete => match (self.view.selected_folder, self.view.focused) {
                 (Some(folder), _) => {
                     self.call_reporting_errors("folder.delete", json!({ "folder": folder }))
                         .await
@@ -404,15 +404,14 @@ impl App {
                 }
                 (None, None) => {}
             },
-            KeyCode::Char('<') => self.start_resizing(-RESIZE_STEP),
-            KeyCode::Char('>') => self.start_resizing(RESIZE_STEP),
-            KeyCode::Char('b') => {
+            PrefixAction::ResizeLeft => self.start_resizing(-keybindings::RESIZE_STEP_SML),
+            PrefixAction::ResizeRight => self.start_resizing(keybindings::RESIZE_STEP_SML),
+            PrefixAction::ToggleSidebar => {
                 self.view.sidebar.visible = !self.view.sidebar.visible;
                 self.relayout();
             }
-            KeyCode::Char('d' | 'q') => self.quit = true,
-            KeyCode::Char('?') => self.view.mode = Mode::Help,
-            _ => {}
+            PrefixAction::Detach => self.quit = true,
+            PrefixAction::ShowHelp => self.view.mode = Mode::Help,
         }
     }
 
@@ -423,25 +422,20 @@ impl App {
 
     /// Resizes on resize keys and stays in resize mode; any other key leaves it unsent.
     fn on_resize_key(&mut self, key: KeyEvent) {
-        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
-        let delta = match key.code {
-            KeyCode::Char('<' | 'h') => -RESIZE_STEP,
-            KeyCode::Char('>' | 'l') => RESIZE_STEP,
-            KeyCode::Char('H') => -RESIZE_BIG_STEP,
-            KeyCode::Char('L') => RESIZE_BIG_STEP,
-            KeyCode::Left if shift => -RESIZE_BIG_STEP,
-            KeyCode::Right if shift => RESIZE_BIG_STEP,
-            KeyCode::Left => -RESIZE_STEP,
-            KeyCode::Right => RESIZE_STEP,
-            KeyCode::Char('=') => {
+        let Some(binding) = keybindings::RESIZE_BINDINGS
+            .iter()
+            .find(|b| (b.matches)(&key))
+        else {
+            return;
+        };
+        match binding.action {
+            ResizeAction::Adjust(delta) => self.start_resizing(delta),
+            ResizeAction::Reset => {
                 self.view.sidebar.reset();
                 self.relayout();
                 self.view.mode = Mode::Resize;
-                return;
             }
-            _ => return,
-        };
-        self.start_resizing(delta);
+        }
     }
 
     fn resize_sidebar(&mut self, delta: i16) {

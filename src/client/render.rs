@@ -1,5 +1,6 @@
 //! Pure rendering: draws a [`View`] and never mutates it.
 
+use std::sync::LazyLock;
 use std::time::Duration;
 use std::time::SystemTime;
 
@@ -21,6 +22,8 @@ use ratatui::widgets::Paragraph;
 use tui_term::widget::Cursor;
 use tui_term::widget::PseudoTerminal;
 
+use super::keybindings::PREFIX_BINDINGS;
+use super::keybindings::RESIZE_BINDINGS;
 use super::selection::Selection;
 use super::view::Areas;
 use super::view::Mode;
@@ -36,45 +39,36 @@ use crate::protocol::unix_millis;
 /// black, which some themes map to the same color as the background
 const MUTED: Color = Color::Rgb(120, 120, 120);
 
-/// One-line summary for the status bar. `? help` comes first so it survives truncation on
-/// narrow screens, where [`HELP`] is the full reference.
-const HINTS: &str = " ctrl-b  ? help · c shell · a command · f folder · n/p switch · J/K move · \
-                     r rename · x close · </> resize · b sidebar · d detach";
+/// One-line summary for the status bar, built from [`PREFIX_BINDINGS`] so it can't drift
+/// from the actual keys. `? help` comes first so it survives truncation on narrow screens,
+/// where [`HELP`] is the full reference.
+static HINTS: LazyLock<String> = LazyLock::new(|| {
+    let items: Vec<&str> = PREFIX_BINDINGS.iter().filter_map(|b| b.hint).collect();
+    format!(" ctrl-b  {}", items.join(" · "))
+});
 
-const RESIZE_HINTS: &str = " resize  ←/→ adjust · shift ±8 · = reset · esc done";
+/// Resize-mode status bar summary, built from [`RESIZE_BINDINGS`].
+static RESIZE_HINTS: LazyLock<String> = LazyLock::new(|| {
+    let items: Vec<&str> = RESIZE_BINDINGS.iter().filter_map(|b| b.hint).collect();
+    format!(" resize  {} · esc done", items.join(" · "))
+});
 
-/// Sections of the help popup: a heading, then (keys, action) rows.
-const HELP: &[(&str, &[(&str, &str)])] = &[
-    (
-        "ctrl-b, then",
-        &[
-            ("c", "new shell pane in the current folder"),
-            ("a", "new pane running a command"),
-            ("f", "new folder"),
-            ("n / j / ↓", "next pane or folder"),
-            ("p / k / ↑", "previous pane or folder"),
-            ("1–9", "focus pane by position"),
-            ("J / shift-↓", "move pane down, across folders"),
-            ("K / shift-↑", "move pane up, across folders"),
-            ("r", "rename pane or folder"),
-            ("x", "close pane / delete folder (keeps panes)"),
-            ("< / >", "resize sidebar"),
-            ("b", "hide/show sidebar"),
-            ("d / q", "detach"),
-            ("ctrl-b", "send a literal ctrl-b"),
-            ("?", "show this help"),
-        ],
-    ),
-    (
-        "resize mode",
-        &[
-            ("← / → / h / l", "adjust by 2"),
-            ("shift / H / L", "adjust by 8"),
-            ("=", "reset width"),
-            ("any other key", "done"),
-        ],
-    ),
-];
+/// Sections of the help popup: a heading, then (keys, action) rows. Built from
+/// [`PREFIX_BINDINGS`] and [`RESIZE_BINDINGS`] so it can't drift from the actual keys.
+static HELP: LazyLock<Vec<(&'static str, Vec<(&'static str, &'static str)>)>> = LazyLock::new(|| {
+    let prefix_rows = PREFIX_BINDINGS
+        .iter()
+        .filter(|b| !b.help_keys.is_empty())
+        .map(|b| (b.help_keys, b.help_desc))
+        .collect();
+    let mut resize_rows: Vec<_> = RESIZE_BINDINGS
+        .iter()
+        .filter(|b| !b.help_keys.is_empty())
+        .map(|b| (b.help_keys, b.help_desc))
+        .collect();
+    resize_rows.push(("any other key", "done"));
+    vec![("ctrl-b, then", prefix_rows), ("resize mode", resize_rows)]
+});
 
 /// Draws `view` as of `now`, which dates the sidebar's status durations.
 pub fn render(frame: &mut Frame, view: &View, now: SystemTime) {
@@ -343,7 +337,7 @@ mod tests {
     #[test]
     fn help_lists_every_action_and_fits_tiny_screens() {
         let screen = draw_help(80, 30);
-        for (_, rows) in HELP {
+        for (_, rows) in HELP.iter() {
             for (_, action) in rows.iter() {
                 assert!(screen.contains(action), "{action} missing from:\n{screen}");
             }
@@ -541,12 +535,12 @@ fn render_status_line(frame: &mut Frame, area: Rect, view: &View) {
             }
             Line::from(spans)
         }
-        Mode::Prefix => Line::from(Span::styled(HINTS, Style::new().black().on_cyan())),
-        Mode::Help => Line::from(Span::styled(HINTS, Style::new().fg(MUTED))),
+        Mode::Prefix => Line::from(Span::styled(HINTS.as_str(), Style::new().black().on_cyan())),
+        Mode::Help => Line::from(Span::styled(HINTS.as_str(), Style::new().fg(MUTED))),
         Mode::Resize => {
             let width = view.sidebar.width_on(area.width);
             Line::from(vec![
-                Span::styled(RESIZE_HINTS, Style::new().black().on_cyan()),
+                Span::styled(RESIZE_HINTS.as_str(), Style::new().black().on_cyan()),
                 Span::styled(format!("  width {width}"), Style::new().cyan()),
             ])
         }
@@ -569,7 +563,7 @@ fn render_status_line(frame: &mut Frame, area: Rect, view: &View) {
                 ),
                 Style::new().black().on_yellow(),
             )),
-            None => Line::from(Span::styled(HINTS, Style::new().fg(MUTED))),
+            None => Line::from(Span::styled(HINTS.as_str(), Style::new().fg(MUTED))),
         },
     };
     frame.render_widget(Paragraph::new(line), area);
