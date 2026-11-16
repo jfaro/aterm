@@ -137,6 +137,35 @@ A rule matches when all of its `contains`/`regex` match, at least one `any`
 entry matches, and no `not` entry matches. Check new patterns against real
 screens with `aterm pane read <pane>`.
 
+## Claude Code skill
+
+`.claude/skills/aterm-orchestration/SKILL.md` teaches an agent running
+inside an aterm pane how to spawn and drive sibling panes (other agents)
+using the CLI above. Claude Code only picks up skills from paths it's
+configured to look at, so add it to one of:
+
+- **This project only** — already in place; nothing to do. Claude Code
+  reads `.claude/skills/` relative to the working directory.
+- **Every project you work in** — copy or symlink the skill into your
+  personal skills directory so it's always available:
+
+  ```sh
+  mkdir -p ~/.claude/skills
+  ln -s "$(pwd)/.claude/skills/aterm-orchestration" ~/.claude/skills/aterm-orchestration
+  ```
+
+- **One other project** — copy the same directory into that project's
+  `.claude/skills/`:
+
+  ```sh
+  cp -r .claude/skills/aterm-orchestration /path/to/other-project/.claude/skills/
+  ```
+
+Either way, no restart is required beyond starting a new Claude Code
+session; the skill triggers automatically once `ATERM_SOCKET` is set and the
+request matches its description (spawning a pane/agent, messaging or
+checking on a sibling pane).
+
 ## Development
 
 ```sh
