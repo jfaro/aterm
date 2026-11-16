@@ -56,17 +56,22 @@ pub fn encode_wheel(up: bool, col: u16, row: u16, screen: &vt100::Screen) -> Opt
     if screen.mouse_protocol_mode() == MouseProtocolMode::None {
         return None;
     }
+
     let button: u32 = if up { 64 } else { 65 };
+
     let (col, row) = (u32::from(col) + 1, u32::from(row) + 1);
+
     let legacy = |max: u32| -> String {
         [button, col, row]
             .iter()
             .filter_map(|v| char::from_u32((v + 32).min(max)))
             .collect()
     };
+
     Some(match screen.mouse_protocol_encoding() {
         MouseProtocolEncoding::Sgr => format!("\x1b[<{button};{col};{row}M"),
         MouseProtocolEncoding::Utf8 => format!("\x1b[M{}", legacy(2047)),
+
         // Values above 127 would be mangled into UTF-8 on the way to the pane.
         MouseProtocolEncoding::Default => format!("\x1b[M{}", legacy(127)),
     })

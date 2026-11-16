@@ -35,6 +35,7 @@ impl Selection {
     /// First and last selected cells in reading order, both inclusive.
     pub fn bounds(&self) -> (Position, Position) {
         let key = |p: Position| (p.y, p.x);
+
         if key(self.anchor) <= key(self.head) {
             (self.anchor, self.head)
         } else {
@@ -51,14 +52,18 @@ impl Selection {
     /// The selected text, with soft-wrapped rows joined and trailing blanks dropped.
     pub fn text(&self, screen: &vt100::Screen) -> String {
         let (rows, cols) = screen.size();
+
         if rows == 0 || cols == 0 {
             return String::new();
         }
+
         // `contents_between` underflows on columns past the screen's width.
         let clamp = |p: Position| (p.y.min(rows - 1), p.x.min(cols - 1));
         let (start, end) = self.bounds();
         let ((start_row, start_col), (end_row, end_col)) = (clamp(start), clamp(end));
+
         let text = screen.contents_between(start_row, start_col, end_row, end_col + 1);
+
         // Soft-wrapped rows are already joined, so this only trims hard line ends.
         text.split('\n')
             .map(|line| line.trim_end_matches(' '))

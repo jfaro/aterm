@@ -28,6 +28,7 @@ use super::selection::Selection;
 use super::view::Areas;
 use super::view::Mode;
 use super::view::Row;
+use super::view::SidebarPosition;
 use super::view::View;
 use super::view::areas;
 use crate::detect::AgentState;
@@ -77,12 +78,12 @@ pub fn render(frame: &mut Frame, view: &View, now: SystemTime) {
         pane,
         status,
     } = areas(frame.area(), &view.sidebar);
-    if sidebar.width > 0 {
+    if !sidebar.is_empty() {
         render_sidebar(frame, sidebar, view, unix_millis(now));
     }
     render_pane(frame, pane, view);
     render_status(frame, status, view);
-    if sidebar.width > 0 {
+    if !sidebar.is_empty() && view.sidebar.position == SidebarPosition::Left {
         let junction = Position::new(sidebar.right() - 1, status.y);
         if let Some(cell) = frame.buffer_mut().cell_mut(junction) {
             cell.set_symbol("┴");
@@ -159,8 +160,12 @@ fn render_help(frame: &mut Frame, area: Rect) {
 }
 
 fn render_sidebar(frame: &mut Frame, area: Rect, view: &View, now_ms: u64) {
+    let border = match view.sidebar.position {
+        SidebarPosition::Left => Borders::RIGHT,
+        SidebarPosition::Bottom => Borders::TOP,
+    };
     let block = Block::new()
-        .borders(Borders::RIGHT)
+        .borders(border)
         .border_style(Style::new().fg(MUTED));
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -538,10 +543,13 @@ fn render_status_line(frame: &mut Frame, area: Rect, view: &View) {
         Mode::Prefix => Line::from(Span::styled(HINTS.as_str(), Style::new().black().on_cyan())),
         Mode::Help => Line::from(Span::styled(HINTS.as_str(), Style::new().fg(MUTED))),
         Mode::Resize => {
-            let width = view.sidebar.width_on(area.width);
+            let (label, size) = match view.sidebar.position {
+                SidebarPosition::Left => ("width", view.sidebar.width),
+                SidebarPosition::Bottom => ("height", view.sidebar.width),
+            };
             Line::from(vec![
                 Span::styled(RESIZE_HINTS.as_str(), Style::new().black().on_cyan()),
-                Span::styled(format!("  width {width}"), Style::new().cyan()),
+                Span::styled(format!("  {label} {size}"), Style::new().cyan()),
             ])
         }
         Mode::Normal => match &view.message {

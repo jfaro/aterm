@@ -48,6 +48,7 @@ pub use view::MIN_SIDEBAR_WIDTH;
 use view::Mode;
 use view::PromptKind;
 use view::Sidebar;
+use view::SidebarPosition;
 use view::Toast;
 use view::View;
 use view::areas;
@@ -410,6 +411,10 @@ impl App {
                 self.view.sidebar.visible = !self.view.sidebar.visible;
                 self.relayout();
             }
+            PrefixAction::ToggleSidebarPosition => {
+                self.view.sidebar.position = self.view.sidebar.position.toggle();
+                self.relayout();
+            }
             PrefixAction::Detach => self.quit = true,
             PrefixAction::ShowHelp => self.view.mode = Mode::Help,
         }
@@ -439,7 +444,11 @@ impl App {
     }
 
     fn resize_sidebar(&mut self, delta: i16) {
-        self.view.sidebar.resize(delta, self.screen_area.width);
+        let extent = match self.view.sidebar.position {
+            SidebarPosition::Left => self.screen_area.width,
+            SidebarPosition::Bottom => self.screen_area.height,
+        };
+        self.view.sidebar.resize(delta, extent);
         self.relayout();
     }
 

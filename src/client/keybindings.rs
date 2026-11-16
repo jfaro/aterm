@@ -24,6 +24,7 @@ pub enum PrefixAction {
     ResizeLeft,
     ResizeRight,
     ToggleSidebar,
+    ToggleSidebarPosition,
     Detach,
     ShowHelp,
 }
@@ -147,6 +148,13 @@ pub const PREFIX_BINDINGS: &[PrefixBinding] = &[
         help_keys: "b",
         help_desc: "hide/show sidebar",
         action: PrefixAction::ToggleSidebar,
+    },
+    PrefixBinding {
+        matches: |key| key.code == KeyCode::Char('B'),
+        hint: None,
+        help_keys: "B",
+        help_desc: "move sidebar to bottom/left",
+        action: PrefixAction::ToggleSidebarPosition,
     },
     PrefixBinding {
         matches: |key| matches!(key.code, KeyCode::Char('d' | 'q')),
