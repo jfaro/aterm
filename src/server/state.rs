@@ -164,6 +164,23 @@ impl AppState {
         Ok(moved)
     }
 
+    /// Swaps a folder with its neighbor `delta` (±1) places away in sidebar
+    /// order. A no-op at either end. Returns the folder's resulting index.
+    pub fn move_folder(&mut self, id: FolderId, delta: isize) -> Result<usize> {
+        let index = self
+            .folders
+            .iter()
+            .position(|f| f.info.id == id)
+            .ok_or_else(|| no_such_folder(id))?;
+        if let Some(target) = index.checked_add_signed(delta) {
+            if target < self.folders.len() {
+                self.folders.swap(index, target);
+                return Ok(target);
+            }
+        }
+        Ok(index)
+    }
+
     fn folder_mut(&mut self, id: FolderId) -> Result<&mut Folder> {
         self.folders
             .iter_mut()
@@ -360,6 +377,24 @@ mod tests {
         assert!(state.list().iter().all(|p| p.folder.is_none()));
         assert_eq!(state.folders(), [a]);
         assert!(state.delete_folder(b.id).is_err());
+    }
+
+    #[test]
+    fn folders_can_be_reordered() {
+        let mut state = AppState::default();
+        let a = state.create_folder("a").unwrap();
+        let b = state.create_folder("b").unwrap();
+        let c = state.create_folder("c").unwrap();
+        assert_eq!(state.folders(), [a.clone(), b.clone(), c.clone()]);
+
+        assert_eq!(state.move_folder(b.id, 1).unwrap(), 2);
+        assert_eq!(state.folders(), [a.clone(), c.clone(), b.clone()]);
+        assert_eq!(state.move_folder(b.id, 1).unwrap(), 2);
+        assert_eq!(state.folders(), [a.clone(), c.clone(), b.clone()]);
+
+        assert_eq!(state.move_folder(a.id, -1).unwrap(), 0);
+        assert_eq!(state.folders(), [a, c, b]);
+        assert!(state.move_folder(99, 1).is_err());
     }
 
     #[test]

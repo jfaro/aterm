@@ -39,6 +39,9 @@ pub struct Snapshot<'a> {
 /// Result of evaluating a manifest against a snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Detection {
+    /// Agent state the snapshot was classified as.
     pub state: AgentState,
+
+    /// Name of the rule that matched, or `None` if nothing matched.
     pub rule: Option<String>,
 }

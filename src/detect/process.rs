@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::process::Command;
 
-/// Maps each process group id to the program names of its members.
+/// Maps each process group ID to the program names of its members.
 ///
 /// For every process, both argv[0] and argv[1] are recorded so that agents
 /// launched through an interpreter (`node /path/to/codex`) are still found.
@@ -15,19 +15,29 @@ pub fn process_groups() -> HashMap<i32, Vec<String>> {
         Ok(output) if output.status.success() => output.stdout,
         _ => return HashMap::new(),
     };
+
     parse_ps(&String::from_utf8_lossy(&output))
 }
 
+/// Parse `ps -A -o pgid=,args=` to a map from process group ID to program names.
+///
+/// Lines that don't start with a valid pgid are skipped.
 fn parse_ps(output: &str) -> HashMap<i32, Vec<String>> {
     let mut groups: HashMap<i32, Vec<String>> = HashMap::new();
+
     for line in output.lines() {
+        // Parse the process group ID and args.
         let Some((pgid, args)) = line.trim_start().split_once(char::is_whitespace) else {
             continue;
         };
+
         let Ok(pgid) = pgid.parse() else { continue };
+
+        // Multiple processes can share a pgid, so names accumulate across lines.
         let names = groups.entry(pgid).or_default();
         names.extend(args.split_whitespace().take(2).map(str::to_owned));
     }
+
     groups
 }
 

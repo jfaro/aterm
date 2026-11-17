@@ -15,8 +15,37 @@ use crate::protocol::PaneInfo;
 pub const DEFAULT_SIDEBAR_WIDTH: u16 = 28;
 pub const MIN_SIDEBAR_WIDTH: u16 = 16;
 
-/// Columns the pane keeps however wide the sidebar is asked to be.
-const MIN_PANE_WIDTH: u16 = 20;
+/// Sidebar's minimum size in rows when docked at the bottom, where a
+/// terminal's height is usually far tighter than its width.
+pub const MIN_SIDEBAR_HEIGHT: u16 = 4;
+
+/// Columns the pane keeps when the sidebar runs down the side.
+const MIN_PANE_EXTENT: u16 = 20;
+
+/// Rows the pane keeps when the sidebar is docked at the bottom.
+const MIN_PANE_ROWS: u16 = 6;
+
+/// Where the sidebar is drawn relative to the pane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SidebarPosition {
+    Left,
+    Bottom,
+}
+
+impl SidebarPosition {
+    pub fn toggle(self) -> Self {
+        match self {
+            Self::Left => Self::Bottom,
+            Self::Bottom => Self::Left,
+        }
+    }
+}
+
+impl Default for SidebarPosition {
+    fn default() -> Self {
+        Self::Left
+    }
+}
 
 pub enum Mode {
     /// Keys go to the focused pane.
@@ -61,10 +90,14 @@ pub struct Toast {
 
 pub struct Sidebar {
     /// Width asked for, kept even while the screen is too narrow to honor it.
+    /// Measured in columns when `position` is `Left`, rows when `Bottom`.
     pub width: u16,
 
     /// Whether the sidebar is drawn at all.
     pub visible: bool,
+
+    /// Where the sidebar is drawn relative to the pane.
+    pub position: SidebarPosition,
 }
 
 impl Sidebar {
@@ -72,28 +105,41 @@ impl Sidebar {
         Self {
             width: width.max(MIN_SIDEBAR_WIDTH),
             visible: true,
+            position: SidebarPosition::default(),
         }
     }
 
-    /// Columns the sidebar occupies on a screen `screen_width` columns wide.
-    pub fn width_on(&self, screen_width: u16) -> u16 {
+    /// Minimum sidebar size and minimum pane size along the axis the current
+    /// position resizes on: columns when `Left`, rows when `Bottom`.
+    fn bounds(&self) -> (u16, u16) {
+        match self.position {
+            SidebarPosition::Left => (MIN_SIDEBAR_WIDTH, MIN_PANE_EXTENT),
+            SidebarPosition::Bottom => (MIN_SIDEBAR_HEIGHT, MIN_PANE_ROWS),
+        }
+    }
+
+    /// Columns or rows the sidebar occupies along an axis `extent` cells long.
+    pub fn width_on(&self, extent: u16) -> u16 {
         if !self.visible {
             return 0;
         }
-        self.width.min(screen_width.saturating_sub(MIN_PANE_WIDTH))
+        let (_, min_pane) = self.bounds();
+        self.width.min(extent.saturating_sub(min_pane))
     }
 
-    /// Changes the width by `delta` columns, starting from what a screen `screen_width` columns
-    /// wide can show and staying within its bounds, and shows the sidebar.
-    pub fn resize(&mut self, delta: i16, screen_width: u16) {
-        let max = screen_width
-            .saturating_sub(MIN_PANE_WIDTH)
-            .max(MIN_SIDEBAR_WIDTH);
+    /// Changes the width by `delta` cells, starting from what an axis `extent`
+    /// cells long can show and staying within its bounds, and shows the
+    /// sidebar.
+    pub fn resize(&mut self, delta: i16, extent: u16) {
+        let (min_sidebar, min_pane) = self.bounds();
+        let max = extent.saturating_sub(min_pane).max(min_sidebar);
+
         self.width = self
             .width
             .min(max)
             .saturating_add_signed(delta)
-            .clamp(MIN_SIDEBAR_WIDTH, max);
+            .clamp(min_sidebar, max);
+
         self.visible = true;
     }
 
@@ -315,9 +361,20 @@ const STATUS_HEIGHT: u16 = 2;
 pub fn areas(screen: Rect, sidebar: &Sidebar) -> Areas {
     let [main, status] =
         Layout::vertical([Constraint::Min(1), Constraint::Length(STATUS_HEIGHT)]).areas(screen);
-    let sidebar_width = sidebar.width_on(screen.width);
-    let [sidebar, pane] =
-        Layout::horizontal([Constraint::Length(sidebar_width), Constraint::Min(1)]).areas(main);
+    let (sidebar, pane) = match sidebar.position {
+        SidebarPosition::Left => {
+            let width = sidebar.width_on(main.width);
+            let [sidebar, pane] =
+                Layout::horizontal([Constraint::Length(width), Constraint::Min(1)]).areas(main);
+            (sidebar, pane)
+        }
+        SidebarPosition::Bottom => {
+            let height = sidebar.width_on(main.height);
+            let [pane, sidebar] =
+                Layout::vertical([Constraint::Min(1), Constraint::Length(height)]).areas(main);
+            (sidebar, pane)
+        }
+    };
     Areas {
         sidebar,
         pane,
@@ -473,7 +530,7 @@ mod tests {
         sidebar.resize(-100, 100);
         assert_eq!(sidebar.width, MIN_SIDEBAR_WIDTH);
         sidebar.resize(100, 100);
-        assert_eq!(sidebar.width, 100 - MIN_PANE_WIDTH);
+        assert_eq!(sidebar.width, 100 - MIN_PANE_EXTENT);
         sidebar.reset();
         assert_eq!(sidebar.width, DEFAULT_SIDEBAR_WIDTH);
     }
@@ -501,5 +558,41 @@ mod tests {
         sidebar.resize(2, 100);
         assert!(sidebar.visible);
         assert_eq!(areas(screen, &sidebar).sidebar.width, 30);
+    }
+
+    #[test]
+    fn bottom_sidebar_splits_the_screen_vertically() {
+        let sidebar = Sidebar {
+            position: SidebarPosition::Bottom,
+            ..Sidebar::default()
+        };
+        let screen = Rect::new(0, 0, 100, 50);
+        let areas = areas(screen, &sidebar);
+        assert_eq!(areas.pane.y, 0);
+        assert_eq!(areas.sidebar.y, areas.pane.bottom());
+        assert_eq!(areas.sidebar.height, DEFAULT_SIDEBAR_WIDTH);
+        assert_eq!(areas.status.y, areas.sidebar.bottom());
+    }
+
+    #[test]
+    fn bottom_sidebar_resizes_on_a_typically_short_terminal() {
+        // A 24-row terminal is far shorter than `MIN_SIDEBAR_WIDTH +
+        // MIN_PANE_EXTENT`, which used to pin the resize bounds to a single
+        // value and make resizing a no-op.
+        let mut sidebar = Sidebar {
+            position: SidebarPosition::Bottom,
+            ..Sidebar::default()
+        };
+        sidebar.resize(-2, 24);
+        let shrunk = sidebar.width;
+        sidebar.resize(-2, 24);
+        assert!(sidebar.width < shrunk);
+    }
+
+    #[test]
+    fn sidebar_position_toggles_between_left_and_bottom() {
+        assert_eq!(SidebarPosition::default(), SidebarPosition::Left);
+        assert_eq!(SidebarPosition::Left.toggle(), SidebarPosition::Bottom);
+        assert_eq!(SidebarPosition::Bottom.toggle(), SidebarPosition::Left);
     }
 }

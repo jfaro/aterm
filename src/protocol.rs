@@ -115,6 +115,7 @@ pub mod events {
     pub const PANE_CLOSED: &str = "pane.closed";
     pub const FOLDER_CREATED: &str = "folder.created";
     pub const FOLDER_UPDATED: &str = "folder.updated";
+    pub const FOLDER_MOVED: &str = "folder.moved";
     pub const FOLDER_DELETED: &str = "folder.deleted";
 }
 

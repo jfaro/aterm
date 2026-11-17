@@ -22,15 +22,21 @@ pub fn is_prefix(key: &KeyEvent) -> bool {
 pub fn translate(key: &KeyEvent) -> Option<PaneInput> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
-    let alt_prefix = if alt { "alt-" } else { "" };
+    // BackTab is crossterm's own name for Shift+Tab.
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT) || key.code == KeyCode::BackTab;
 
-    let named = match key.code {
-        KeyCode::Char(c) if ctrl => return Some(PaneInput::Key(format!("{alt_prefix}ctrl-{c}"))),
-        KeyCode::Char(c) if alt => return Some(PaneInput::Key(format!("alt-{c}"))),
-        KeyCode::Char(c) => return Some(PaneInput::Text(c.to_string())),
+    if let KeyCode::Char(c) = key.code {
+        return Some(match (ctrl, alt) {
+            (true, true) => PaneInput::Key(format!("alt-ctrl-{c}")),
+            (true, false) => PaneInput::Key(format!("ctrl-{c}")),
+            (false, true) => PaneInput::Key(format!("alt-{c}")),
+            (false, false) => PaneInput::Text(c.to_string()),
+        });
+    }
+
+    let base = match key.code {
         KeyCode::Enter => "enter".to_owned(),
-        KeyCode::Tab => "tab".to_owned(),
-        KeyCode::BackTab => "shift-tab".to_owned(),
+        KeyCode::Tab | KeyCode::BackTab => "tab".to_owned(),
         KeyCode::Backspace => "backspace".to_owned(),
         KeyCode::Esc => "esc".to_owned(),
         KeyCode::Up => "up".to_owned(),
@@ -47,7 +53,12 @@ pub fn translate(key: &KeyEvent) -> Option<PaneInput> {
         _ => return None,
     };
 
-    Some(PaneInput::Key(format!("{alt_prefix}{named}")))
+    let ctrl_prefix = if ctrl { "ctrl-" } else { "" };
+    let alt_prefix = if alt { "alt-" } else { "" };
+    let shift_prefix = if shift { "shift-" } else { "" };
+    Some(PaneInput::Key(format!(
+        "{ctrl_prefix}{alt_prefix}{shift_prefix}{base}"
+    )))
 }
 
 /// Bytes reporting one wheel notch at the 0-based cell (`col`, `row`) to a
@@ -56,17 +67,22 @@ pub fn encode_wheel(up: bool, col: u16, row: u16, screen: &vt100::Screen) -> Opt
     if screen.mouse_protocol_mode() == MouseProtocolMode::None {
         return None;
     }
+
     let button: u32 = if up { 64 } else { 65 };
+
     let (col, row) = (u32::from(col) + 1, u32::from(row) + 1);
+
     let legacy = |max: u32| -> String {
         [button, col, row]
             .iter()
             .filter_map(|v| char::from_u32((v + 32).min(max)))
             .collect()
     };
+
     Some(match screen.mouse_protocol_encoding() {
         MouseProtocolEncoding::Sgr => format!("\x1b[<{button};{col};{row}M"),
         MouseProtocolEncoding::Utf8 => format!("\x1b[M{}", legacy(2047)),
+
         // Values above 127 would be mangled into UTF-8 on the way to the pane.
         MouseProtocolEncoding::Default => format!("\x1b[M{}", legacy(127)),
     })
@@ -116,6 +132,14 @@ mod tests {
             translate(&key(KeyCode::F(5), KeyModifiers::NONE)),
             Some(PaneInput::Key("f5".into()))
         );
+        assert_eq!(
+            translate(&key(KeyCode::Enter, KeyModifiers::SHIFT)),
+            Some(PaneInput::Key("shift-enter".into()))
+        );
+        assert_eq!(
+            translate(&key(KeyCode::Left, KeyModifiers::CONTROL)),
+            Some(PaneInput::Key("ctrl-left".into()))
+        );
     }
 
     #[test]
@@ -129,7 +153,13 @@ mod tests {
             KeyCode::Char('q'),
         ];
         for code in codes {
-            for modifiers in [KeyModifiers::NONE, KeyModifiers::ALT, KeyModifiers::CONTROL] {
+            for modifiers in [
+                KeyModifiers::NONE,
+                KeyModifiers::ALT,
+                KeyModifiers::CONTROL,
+                KeyModifiers::SHIFT,
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            ] {
                 if let Some(PaneInput::Key(name)) = translate(&key(code, modifiers)) {
                     assert!(
                         crate::keys::encode(&name, false).is_some(),

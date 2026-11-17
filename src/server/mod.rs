@@ -285,6 +285,18 @@ impl Server {
         Ok(moved)
     }
 
+    fn move_folder(&self, params: MoveFolderParams) -> Result<Value> {
+        let index = self
+            .inner
+            .lock()
+            .unwrap()
+            .state
+            .move_folder(params.folder, params.delta as isize)?;
+        let moved = json!({ "folder": params.folder, "index": index });
+        self.emit(events::FOLDER_MOVED, moved.clone());
+        Ok(moved)
+    }
+
     fn create_folder(&self, params: FolderNameParams) -> Result<FolderInfo> {
         let info = self
             .inner
@@ -603,6 +615,7 @@ async fn dispatch(server: &Server, method: &str, params: Value) -> Result<Value>
         "folder.list" => Ok(json!(server.inner.lock().unwrap().state.folders())),
         "folder.create" => Ok(json!(server.create_folder(parse(params)?)?)),
         "folder.rename" => Ok(json!(server.rename_folder(parse(params)?)?)),
+        "folder.move" => server.move_folder(parse(params)?),
         "folder.delete" => {
             server.delete_folder(parse(params)?)?;
             Ok(json!({}))
@@ -746,6 +759,12 @@ struct FolderNameParams {
 struct RenameFolderParams {
     folder: FolderId,
     name: String,
+}
+
+#[derive(Deserialize)]
+struct MoveFolderParams {
+    folder: FolderId,
+    delta: i32,
 }
 
 /// Wraps a field that is present, even as `null`, in `Some`, so that with

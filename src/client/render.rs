@@ -1,5 +1,6 @@
 //! Pure rendering: draws a [`View`] and never mutates it.
 
+use std::sync::LazyLock;
 use std::time::Duration;
 use std::time::SystemTime;
 
@@ -21,10 +22,13 @@ use ratatui::widgets::Paragraph;
 use tui_term::widget::Cursor;
 use tui_term::widget::PseudoTerminal;
 
+use super::keybindings::PREFIX_BINDINGS;
+use super::keybindings::RESIZE_BINDINGS;
 use super::selection::Selection;
 use super::view::Areas;
 use super::view::Mode;
 use super::view::Row;
+use super::view::SidebarPosition;
 use super::view::View;
 use super::view::areas;
 use crate::detect::AgentState;
@@ -32,44 +36,48 @@ use crate::protocol::FolderInfo;
 use crate::protocol::PaneInfo;
 use crate::protocol::unix_millis;
 
-/// One-line summary for the status bar. `? help` comes first so it survives truncation on
-/// narrow screens, where [`HELP`] is the full reference.
-const HINTS: &str = " ctrl-b  ? help · c shell · a command · f folder · n/p switch · J/K move · \
-                     r rename · x close · </> resize · b sidebar · d detach";
-const RESIZE_HINTS: &str = " resize  ←/→ adjust · shift ±8 · = reset · esc done";
+/// Muted text and borders use this gray rather than the terminal's ANSI bright-
+/// black, which some themes map to the same color as the background
+const MUTED: Color = Color::Rgb(120, 120, 120);
 
-/// Sections of the help popup: a heading, then (keys, action) rows.
-const HELP: &[(&str, &[(&str, &str)])] = &[
-    (
-        "ctrl-b, then",
-        &[
-            ("c", "new shell pane in the current folder"),
-            ("a", "new pane running a command"),
-            ("f", "new folder"),
-            ("n / j / ↓", "next pane or folder"),
-            ("p / k / ↑", "previous pane or folder"),
-            ("1–9", "focus pane by position"),
-            ("J / shift-↓", "move pane down, across folders"),
-            ("K / shift-↑", "move pane up, across folders"),
-            ("r", "rename pane or folder"),
-            ("x", "close pane / delete folder (keeps panes)"),
-            ("< / >", "resize sidebar"),
-            ("b", "hide/show sidebar"),
-            ("d / q", "detach"),
-            ("ctrl-b", "send a literal ctrl-b"),
-            ("?", "show this help"),
-        ],
-    ),
-    (
-        "resize mode",
-        &[
-            ("← / → / h / l", "adjust by 2"),
-            ("shift / H / L", "adjust by 8"),
-            ("=", "reset width"),
-            ("any other key", "done"),
-        ],
-    ),
-];
+/// Background tint for the sidebar's selected row, so the selection is
+/// visible at a glance rather than just the thin marker bar.
+const SELECTED_BG: Color = Color::Rgb(40, 48, 64);
+
+/// One-line summary for the status bar, built from [`PREFIX_BINDINGS`] so it can't drift
+/// from the actual keys. Shown only while the prefix key is held down, since
+/// [`HELP`] is the full reference otherwise.
+static HINTS: LazyLock<String> = LazyLock::new(|| {
+    let items: Vec<&str> = PREFIX_BINDINGS.iter().filter_map(|b| b.hint).collect();
+    format!(" ctrl-b  {}", items.join(" · "))
+});
+
+/// Idle status-bar hint pointing at the full key reference, rather than
+/// restating every command.
+const HELP_HINT: &str = " ctrl-b ?  help";
+
+/// Resize-mode status bar summary, built from [`RESIZE_BINDINGS`].
+static RESIZE_HINTS: LazyLock<String> = LazyLock::new(|| {
+    let items: Vec<&str> = RESIZE_BINDINGS.iter().filter_map(|b| b.hint).collect();
+    format!(" resize  {} · esc done", items.join(" · "))
+});
+
+/// Sections of the help popup: a heading, then (keys, action) rows. Built from
+/// [`PREFIX_BINDINGS`] and [`RESIZE_BINDINGS`] so it can't drift from the actual keys.
+static HELP: LazyLock<Vec<(&'static str, Vec<(&'static str, &'static str)>)>> = LazyLock::new(|| {
+    let prefix_rows = PREFIX_BINDINGS
+        .iter()
+        .filter(|b| !b.help_keys.is_empty())
+        .map(|b| (b.help_keys, b.help_desc))
+        .collect();
+    let mut resize_rows: Vec<_> = RESIZE_BINDINGS
+        .iter()
+        .filter(|b| !b.help_keys.is_empty())
+        .map(|b| (b.help_keys, b.help_desc))
+        .collect();
+    resize_rows.push(("any other key", "done"));
+    vec![("ctrl-b, then", prefix_rows), ("resize mode", resize_rows)]
+});
 
 /// Draws `view` as of `now`, which dates the sidebar's status durations.
 pub fn render(frame: &mut Frame, view: &View, now: SystemTime) {
@@ -78,12 +86,12 @@ pub fn render(frame: &mut Frame, view: &View, now: SystemTime) {
         pane,
         status,
     } = areas(frame.area(), &view.sidebar);
-    if sidebar.width > 0 {
+    if !sidebar.is_empty() {
         render_sidebar(frame, sidebar, view, unix_millis(now));
     }
     render_pane(frame, pane, view);
     render_status(frame, status, view);
-    if sidebar.width > 0 {
+    if !sidebar.is_empty() && view.sidebar.position == SidebarPosition::Left {
         let junction = Position::new(sidebar.right() - 1, status.y);
         if let Some(cell) = frame.buffer_mut().cell_mut(junction) {
             cell.set_symbol("┴");
@@ -141,9 +149,9 @@ fn render_help(frame: &mut Frame, area: Rect) {
 
     let content_width = lines.iter().map(Line::width).max().unwrap_or(0) as u16;
     let block = Block::bordered()
-        .border_style(Style::new().dark_gray())
+        .border_style(Style::new().fg(MUTED))
         .title(" help ".bold())
-        .title_bottom(" any key to close ".dark_gray());
+        .title_bottom(Span::styled(" any key to close ", Style::new().fg(MUTED)));
     let width = (content_width + 4).min(area.width);
     let height = (lines.len() as u16 + 2).min(area.height);
     let popup = Rect {
@@ -160,37 +168,43 @@ fn render_help(frame: &mut Frame, area: Rect) {
 }
 
 fn render_sidebar(frame: &mut Frame, area: Rect, view: &View, now_ms: u64) {
+    let border = match view.sidebar.position {
+        SidebarPosition::Left => Borders::RIGHT,
+        SidebarPosition::Bottom => Borders::TOP,
+    };
     let block = Block::new()
-        .borders(Borders::RIGHT)
-        .border_style(Style::new().dark_gray());
+        .borders(border)
+        .border_style(Style::new().fg(MUTED));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
     let selected = view.selected_row();
     // Pane numbers skip folder rows, matching `ctrl-b 1`–`9`.
     let mut pane_number = 0;
-    let lines: Vec<Line> = view
-        .rows()
-        .into_iter()
-        .filter_map(|row| match row {
+    let mut lines: Vec<Line> = Vec::new();
+    for row in view.rows() {
+        match row {
             Row::Folder(id) => {
-                let folder = view.folders.iter().find(|folder| folder.id == id)?;
+                let Some(folder) = view.folders.iter().find(|folder| folder.id == id) else {
+                    continue;
+                };
                 let count = view
                     .panes
                     .iter()
                     .filter(|pane| view.group_of(pane) == Some(id))
                     .count();
-                Some(folder_row(
-                    folder,
-                    count,
-                    selected == Some(row),
-                    inner.width,
-                ))
+                // Blank line between folder groups, but not before the first row.
+                if !lines.is_empty() {
+                    lines.push(Line::default());
+                }
+                lines.push(folder_row(folder, count, selected == Some(row), inner.width));
             }
             Row::Pane(id) => {
-                let pane = view.panes.iter().find(|pane| pane.id == id)?;
+                let Some(pane) = view.panes.iter().find(|pane| pane.id == id) else {
+                    continue;
+                };
                 pane_number += 1;
-                Some(sidebar_row(
+                lines.push(sidebar_row(
                     pane_number,
                     pane,
                     PaneRowStyle {
@@ -200,24 +214,25 @@ fn render_sidebar(frame: &mut Frame, area: Rect, view: &View, now_ms: u64) {
                     },
                     inner.width,
                     now_ms,
-                ))
+                ));
             }
-        })
-        .collect();
+        }
+    }
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn folder_row(folder: &FolderInfo, pane_count: usize, selected: bool, width: u16) -> Line<'static> {
     let marker = if selected { "▌" } else { " " };
+    let bg = if selected { SELECTED_BG } else { Color::Reset };
     let count = pane_count.to_string();
     let name_width = (width as usize).saturating_sub(1 + 2 + 1 + count.len());
     let name: String = folder.name.chars().take(name_width).collect();
 
     Line::from(vec![
-        Span::styled(marker, Style::new().cyan()),
-        Span::styled("▾ ", Style::new().dark_gray()),
-        Span::styled(format!("{name:<name_width$} "), Style::new().bold()),
-        Span::styled(count, Style::new().dark_gray()),
+        Span::styled(marker, Style::new().cyan().bg(bg)),
+        Span::styled("▾ ", Style::new().fg(MUTED).bg(bg)),
+        Span::styled(format!("{name:<name_width$} "), Style::new().bold().bg(bg)),
+        Span::styled(count, Style::new().fg(MUTED).bg(bg)),
     ])
 }
 
@@ -247,6 +262,11 @@ fn sidebar_row(
         )),
     };
     let marker = if style.selected { "▌" } else { " " };
+    let bg = if style.selected {
+        SELECTED_BG
+    } else {
+        Color::Reset
+    };
     let indent = if style.indented { " " } else { "" };
     let name_width = (width as usize).saturating_sub(4 + indent.len() + 1 + label.len() + 1);
     let name: String = format!("{number} {}", pane.name)
@@ -254,17 +274,17 @@ fn sidebar_row(
         .take(name_width)
         .collect();
     let row_style = if style.focused {
-        Style::new().add_modifier(Modifier::BOLD)
+        Style::new().add_modifier(Modifier::BOLD).bg(bg)
     } else {
-        Style::new()
+        Style::new().bg(bg)
     };
 
     Line::from(vec![
-        Span::styled(marker, Style::new().cyan()),
-        Span::raw(indent),
-        Span::styled(format!("{icon} "), Style::new().fg(color)),
+        Span::styled(marker, Style::new().cyan().bg(bg)),
+        Span::styled(indent, Style::new().bg(bg)),
+        Span::styled(format!("{icon} "), Style::new().fg(color).bg(bg)),
         Span::styled(format!("{name:<name_width$} "), row_style),
-        Span::styled(label, Style::new().fg(color)),
+        Span::styled(label, Style::new().fg(color).bg(bg)),
     ])
 }
 
@@ -295,7 +315,7 @@ fn status_icon(state: AgentState, now_ms: u64) -> (&'static str, Color) {
         AgentState::Blocked if (frame / BLINK_FRAMES).is_multiple_of(2) => ("●", Color::Red),
         AgentState::Blocked => ("○", Color::Red),
         AgentState::Idle => ("●", Color::Green),
-        AgentState::Unknown => ("○", Color::DarkGray),
+        AgentState::Unknown => ("○", MUTED),
     }
 }
 
@@ -338,7 +358,7 @@ mod tests {
     #[test]
     fn help_lists_every_action_and_fits_tiny_screens() {
         let screen = draw_help(80, 30);
-        for (_, rows) in HELP {
+        for (_, rows) in HELP.iter() {
             for (_, action) in rows.iter() {
                 assert!(screen.contains(action), "{action} missing from:\n{screen}");
             }
@@ -463,7 +483,7 @@ fn render_pane(frame: &mut Frame, area: Rect, view: &View) {
     if view.focused.is_none() {
         let hint =
             Paragraph::new("no panes — press ctrl-b c for a shell, ctrl-b a to run a command")
-                .dark_gray()
+                .fg(MUTED)
                 .centered();
         let middle = Rect {
             y: area.y + area.height / 2,
@@ -512,7 +532,7 @@ fn highlight_selection(frame: &mut Frame, area: Rect, selection: Selection) {
 fn render_status(frame: &mut Frame, area: Rect, view: &View) {
     let block = Block::new()
         .borders(Borders::TOP)
-        .border_style(Style::new().dark_gray());
+        .border_style(Style::new().fg(MUTED));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     render_status_line(frame, inner, view);
@@ -536,13 +556,16 @@ fn render_status_line(frame: &mut Frame, area: Rect, view: &View) {
             }
             Line::from(spans)
         }
-        Mode::Prefix => Line::from(Span::styled(HINTS, Style::new().black().on_cyan())),
-        Mode::Help => Line::from(Span::styled(HINTS, Style::new().dark_gray())),
+        Mode::Prefix => Line::from(Span::styled(HINTS.as_str(), Style::new().black().on_cyan())),
+        Mode::Help => Line::from(Span::styled(HELP_HINT, Style::new().fg(MUTED))),
         Mode::Resize => {
-            let width = view.sidebar.width_on(area.width);
+            let (label, size) = match view.sidebar.position {
+                SidebarPosition::Left => ("width", view.sidebar.width),
+                SidebarPosition::Bottom => ("height", view.sidebar.width),
+            };
             Line::from(vec![
-                Span::styled(RESIZE_HINTS, Style::new().black().on_cyan()),
-                Span::styled(format!("  width {width}"), Style::new().cyan()),
+                Span::styled(RESIZE_HINTS.as_str(), Style::new().black().on_cyan()),
+                Span::styled(format!("  {label} {size}"), Style::new().cyan()),
             ])
         }
         Mode::Normal => match &view.message {
@@ -564,7 +587,7 @@ fn render_status_line(frame: &mut Frame, area: Rect, view: &View) {
                 ),
                 Style::new().black().on_yellow(),
             )),
-            None => Line::from(Span::styled(HINTS, Style::new().dark_gray())),
+            None => Line::from(Span::styled(HELP_HINT, Style::new().fg(MUTED))),
         },
     };
     frame.render_widget(Paragraph::new(line), area);

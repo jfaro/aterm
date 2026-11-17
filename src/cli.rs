@@ -180,6 +180,15 @@ pub enum FolderAction {
         /// Folder to delete.
         folder: FolderId,
     },
+
+    /// Move a folder up or down in the sidebar; a no-op at either end.
+    Move {
+        /// Folder to move.
+        folder: FolderId,
+
+        /// Places to move, negative for up and positive for down, e.g. `-1` or `1`.
+        delta: i32,
+    },
 }
 
 #[derive(Subcommand)]
@@ -351,6 +360,10 @@ async fn folder(conn: &Arc<Connection>, action: FolderAction) -> Result<()> {
         }
         FolderAction::Delete { folder } => {
             conn.call("folder.delete", json!({ "folder": folder }))
+                .await?;
+        }
+        FolderAction::Move { folder, delta } => {
+            conn.call("folder.move", json!({ "folder": folder, "delta": delta }))
                 .await?;
         }
     }

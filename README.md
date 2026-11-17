@@ -1,16 +1,17 @@
 # aterm
 
-A minimal terminal multiplexer for coding agents. It runs agents (or any
-command) in panes, works out what each agent is doing (`working`, `blocked`,
-`idle`), and exposes everything over a socket API so agents can orchestrate
-each other.
+A minimal terminal multiplexer for coding agents.
+
+aterm runs agents (or any command) in panes, works out what each agent is doing
+(`working`, `blocked`, `idle`), and exposes everything over a socket API so
+agents can orchestrate each other.
 
 ## Usage
 
 ```sh
 aterm                                   # attach the TUI (starts the server if needed)
-aterm --sidebar-width 40                # … with a wider sidebar
 
+# Panes.
 aterm pane create -- claude             # start a pane, prints its id
 aterm pane list
 aterm pane read 1 --lines 20
@@ -18,6 +19,7 @@ aterm pane send-text 1 'fix the failing test' --enter
 aterm pane send-keys 1 down enter       # named keys: enter, esc, ctrl-c, alt-left, f5, …
 aterm pane move 3 1                     # move pane 3 to the top of its folder (or the top level)
 
+# Folders.
 aterm folder create backend             # prints the folder's id
 aterm pane create --folder 1 -- claude  # start a pane inside folder 1
 aterm pane move 3 1 --folder 1          # move pane 3 to the top of folder 1
@@ -25,6 +27,7 @@ aterm pane move 3 1 --top-level         # … or out of its folder
 aterm folder rename 1 api
 aterm folder delete 1                   # its panes move to the top level
 
+# Monitoring.
 aterm agent wait 1 --status idle --timeout 600
 aterm events                            # stream events as JSON lines
 aterm server stop
@@ -78,7 +81,7 @@ with `aterm --sidebar-width N`.
 
 ## Architecture
 
-```
+```txt
  TUI client ─┐                      ┌─ PaneRuntime: PTY + child + vt100 terminal
  CLI ────────┼─ NDJSON / unix sock ─┤      (reader thread feeds the emulator)
  agents ─────┘                      └─ monitor thread: output events, detection, reaping
@@ -133,6 +136,35 @@ none match, the agent is `idle`. Regions are `title`, `bottom(N)` or `screen`.
 A rule matches when all of its `contains`/`regex` match, at least one `any`
 entry matches, and no `not` entry matches. Check new patterns against real
 screens with `aterm pane read <pane>`.
+
+## Claude Code skill
+
+`.claude/skills/aterm-orchestration/SKILL.md` teaches an agent running
+inside an aterm pane how to spawn and drive sibling panes (other agents)
+using the CLI above. Claude Code only picks up skills from paths it's
+configured to look at, so add it to one of:
+
+- **This project only** — already in place; nothing to do. Claude Code
+  reads `.claude/skills/` relative to the working directory.
+- **Every project you work in** — copy or symlink the skill into your
+  personal skills directory so it's always available:
+
+  ```sh
+  mkdir -p ~/.claude/skills
+  ln -s "$(pwd)/.claude/skills/aterm-orchestration" ~/.claude/skills/aterm-orchestration
+  ```
+
+- **One other project** — copy the same directory into that project's
+  `.claude/skills/`:
+
+  ```sh
+  cp -r .claude/skills/aterm-orchestration /path/to/other-project/.claude/skills/
+  ```
+
+Either way, no restart is required beyond starting a new Claude Code
+session; the skill triggers automatically once `ATERM_SOCKET` is set and the
+request matches its description (spawning a pane/agent, messaging or
+checking on a sibling pane).
 
 ## Development
 
