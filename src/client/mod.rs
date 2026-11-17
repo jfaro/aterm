@@ -34,6 +34,7 @@ use serde_json::json;
 use tokio::sync::mpsc;
 
 use crate::protocol::Event;
+use crate::protocol::FolderId;
 use crate::protocol::FolderInfo;
 use crate::protocol::PaneId;
 use crate::protocol::PaneInfo;
@@ -382,8 +383,8 @@ impl App {
                     self.view.mode = Mode::Prompt { kind, input };
                 }
             }
-            PrefixAction::MoveDown => self.move_focused(1).await,
-            PrefixAction::MoveUp => self.move_focused(-1).await,
+            PrefixAction::MoveDown => self.move_selected(1).await,
+            PrefixAction::MoveUp => self.move_selected(-1).await,
             PrefixAction::FocusNext => self.change_focus(|view| view.cycle_focus(1)),
             PrefixAction::FocusPrev => self.change_focus(|view| view.cycle_focus(-1)),
             PrefixAction::FocusIndex => {
@@ -505,13 +506,18 @@ impl App {
         }
     }
 
+    /// Moves the selected folder, or else the focused pane, one place up
+    /// (`delta` -1) or down (+1).
+    async fn move_selected(&mut self, delta: isize) {
+        match self.view.selected_folder {
+            Some(folder) => self.move_folder(folder, delta).await,
+            None => self.move_focused(delta).await,
+        }
+    }
+
     /// Shifts the focused pane one place up (`delta` -1) or down (+1), crossing into the
     /// neighboring folder at either end of its own and stopping at either end of the sidebar.
-    /// Does nothing while a folder row is selected.
     async fn move_focused(&mut self, delta: isize) {
-        if self.view.selected_folder.is_some() {
-            return;
-        }
         let (Some(pane), Some((folder, index))) = (self.view.focused, self.view.move_target(delta))
         else {
             return;
@@ -523,6 +529,14 @@ impl App {
             json!({ "pane": pane, "folder": folder, "index": index }),
         )
         .await;
+    }
+
+    /// Swaps the selected folder with its neighbor one place up (`delta` -1)
+    /// or down (+1); a no-op at either end of the sidebar.
+    async fn move_folder(&mut self, folder: FolderId, delta: isize) {
+        // The server's `folder.moved` event triggers the list refresh.
+        self.call_reporting_errors("folder.move", json!({ "folder": folder, "delta": delta }))
+            .await;
     }
 
     async fn create_pane(&mut self, command: Option<String>) {

@@ -84,14 +84,14 @@ pub const PREFIX_BINDINGS: &[PrefixBinding] = &[
         },
         hint: Some("J/K move"),
         help_keys: "J / shift-↓",
-        help_desc: "move pane down, across folders",
+        help_desc: "move pane or folder down",
         action: PrefixAction::MoveDown,
     },
     PrefixBinding {
         matches: |key| key.code == KeyCode::Char('K') || (key.code == KeyCode::Up && is_shift(key)),
         hint: None,
         help_keys: "K / shift-↑",
-        help_desc: "move pane up, across folders",
+        help_desc: "move pane or folder up",
         action: PrefixAction::MoveUp,
     },
     PrefixBinding {
