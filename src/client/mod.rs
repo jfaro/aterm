@@ -21,9 +21,12 @@ use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
 use crossterm::event::KeyModifiers;
+use crossterm::event::KeyboardEnhancementFlags;
 use crossterm::event::MouseButton;
 use crossterm::event::MouseEvent;
 use crossterm::event::MouseEventKind;
+use crossterm::event::PopKeyboardEnhancementFlags;
+use crossterm::event::PushKeyboardEnhancementFlags;
 use crossterm::event::{self};
 use crossterm::execute;
 use ratatui::DefaultTerminal;
@@ -68,9 +71,22 @@ pub async fn attach(sidebar_width: u16) -> Result<()> {
 
     let mut terminal = ratatui::init();
     let _ = execute!(stdout(), EnableBracketedPaste, MouseReporting(true));
+    // Lets the outer terminal (if it supports it) report modifiers on keys
+    // like Enter that otherwise collapse to the same byte regardless of
+    // Shift, so e.g. Shift+Enter can be told apart from plain Enter.
+    let enhanced_keyboard = crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
+    if enhanced_keyboard {
+        let _ = execute!(
+            stdout(),
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        );
+    }
     let result = App::new(conn, Sidebar::new(sidebar_width))
         .run(&mut terminal, server_events)
         .await;
+    if enhanced_keyboard {
+        let _ = execute!(stdout(), PopKeyboardEnhancementFlags);
+    }
     let _ = execute!(stdout(), MouseReporting(false), DisableBracketedPaste);
     ratatui::restore();
     result
