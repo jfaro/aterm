@@ -62,6 +62,12 @@ const RESIZE_BIG_STEP: i16 = 8;
 const WHEEL_LINES: usize = 3;
 
 pub async fn attach(sidebar_width: u16) -> Result<()> {
+    // A pane's shell inherits the server's socket, so attaching from inside one
+    // would render the TUI into itself.
+    if std::env::var_os("ATERM_PANE").is_some() {
+        bail!("already inside an aterm pane; unset ATERM_PANE to attach anyway");
+    }
+
     let (conn, server_events) = Connection::connect_or_spawn().await?;
     conn.call("events.subscribe", json!({})).await?;
 
