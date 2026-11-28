@@ -62,6 +62,9 @@ pub enum Mode {
 
     /// Showing the key reference; any key closes it without reaching the pane.
     Help,
+
+    /// Asking whether to delete a folder that just lost its last pane.
+    Confirm { folder: FolderId, name: String },
 }
 
 #[derive(Clone, Copy)]
@@ -232,6 +235,22 @@ impl View {
         let still_there = previous.is_some_and(|id| panes.iter().any(|p| p.id == id));
         if !still_there {
             self.focused = panes.first().map(|p| p.id);
+        }
+        // Offers to clean up a folder that just lost its last pane, however
+        // that happened: an explicit close, a shell exiting, or a crash.
+        // Skipped outside Normal mode so an active prompt or dialog is never
+        // clobbered; the folder stays empty, so nothing is lost.
+        if matches!(self.mode, Mode::Normal) {
+            let emptied = folders.iter().find(|folder| {
+                self.panes.iter().any(|p| self.group_of(p) == Some(folder.id))
+                    && !panes.iter().any(|p| p.folder == Some(folder.id))
+            });
+            if let Some(folder) = emptied {
+                self.mode = Mode::Confirm {
+                    folder: folder.id,
+                    name: folder.name.clone(),
+                };
+            }
         }
         self.panes = panes;
         self.folders = folders;

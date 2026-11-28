@@ -86,25 +86,55 @@ pub fn render(frame: &mut Frame, view: &View, now: SystemTime) {
         pane,
         status,
     } = areas(frame.area(), &view.sidebar);
+
+    // Render the sidebar.
     if !sidebar.is_empty() {
         render_sidebar(frame, sidebar, view, unix_millis(now));
     }
+
+    // Render the pane and status areas.
     render_pane(frame, pane, view);
     render_status(frame, status, view);
+
+    // Render sidebar junction.
     if !sidebar.is_empty() && view.sidebar.position == SidebarPosition::Left {
         let junction = Position::new(sidebar.right() - 1, status.y);
         if let Some(cell) = frame.buffer_mut().cell_mut(junction) {
             cell.set_symbol("┴");
         }
     }
+
+
+    // Render active toast.
     if let Some(toast) = &view.toast
         && now < toast.until
     {
         render_toast(frame, pane, &toast.text);
     }
+
+
+    // Render help modal.
     if matches!(view.mode, Mode::Help) {
         render_help(frame, frame.area());
     }
+
+
+    // Render confirm modal. Its background can change under the dialog (e.g.
+    // focus jumping to another pane as the one it asks about closes), so the
+    // backdrop hides the screen entirely rather than competing with it.
+    if let Mode::Confirm { name, .. } = &view.mode {
+        render_backdrop(frame, frame.area());
+        render_confirm(frame, frame.area(), name);
+    }
+}
+
+/// Blanks `area` to a solid dark fill, hiding whatever was drawn there.
+fn render_backdrop(frame: &mut Frame, area: Rect) {
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Block::new().style(Style::new().bg(Color::Rgb(20, 20, 24))),
+        area,
+    );
 }
 
 /// Draws `text` in a small bordered box in the bottom-right corner of `area`,
@@ -165,6 +195,41 @@ fn render_help(frame: &mut Frame, area: Rect) {
     frame.render_widget(Clear, popup);
     frame.render_widget(block, popup);
     frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// Draws a yes/no popup centered on `area`, asking to delete the now-empty
+/// folder `name`.
+fn render_confirm(frame: &mut Frame, area: Rect, name: &str) {
+    let bg = SELECTED_BG;
+    let question = format!("Delete folder \"{name}\"?");
+    let answer_style = Style::new().bg(bg);
+    let answers = Line::from(vec![
+        Span::styled("Enter", answer_style.fg(Color::Yellow).bold()),
+        Span::styled(" delete   ", answer_style.fg(Color::White)),
+        Span::styled("Esc", answer_style.fg(MUTED).bold()),
+        Span::styled(" cancel", answer_style.fg(Color::White)),
+    ]);
+    let lines = vec![
+        Line::styled(question.clone(), answer_style.fg(Color::White).bold()),
+        Line::default(),
+        answers.clone(),
+    ];
+
+    let width = (question.chars().count().max(answers.width()) as u16 + 4).min(area.width);
+    let height = (lines.len() as u16 + 2).min(area.height);
+    let popup = Rect {
+        x: area.x + (area.width - width) / 2,
+        y: area.y + (area.height - height) / 2,
+        width,
+        height,
+    };
+    let block = Block::bordered()
+        .border_style(Style::new().fg(Color::Yellow).bg(bg))
+        .style(Style::new().bg(bg))
+        .title(" confirm ".bold());
+    let message = Paragraph::new(lines).centered().block(block);
+    frame.render_widget(Clear, popup);
+    frame.render_widget(message, popup);
 }
 
 fn render_sidebar(frame: &mut Frame, area: Rect, view: &View, now_ms: u64) {
@@ -558,6 +623,9 @@ fn render_status_line(frame: &mut Frame, area: Rect, view: &View) {
         }
         Mode::Prefix => Line::from(Span::styled(HINTS.as_str(), Style::new().black().on_cyan())),
         Mode::Help => Line::from(Span::styled(HELP_HINT, Style::new().fg(MUTED))),
+        Mode::Confirm { .. } => {
+            Line::from(Span::styled(" y/enter delete · n/esc keep ", Style::new().fg(MUTED)))
+        }
         Mode::Resize => {
             let (label, size) = match view.sidebar.position {
                 SidebarPosition::Left => ("width", view.sidebar.width),

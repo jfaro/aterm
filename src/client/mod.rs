@@ -227,28 +227,47 @@ impl App {
         self.view.message = None;
         self.view.selection = None;
         match std::mem::replace(&mut self.view.mode, Mode::Normal) {
-            Mode::Normal if input::is_prefix(&key) => self.view.mode = Mode::Prefix,
-            Mode::Normal => {
-                if let Some(pane_input) = input::translate(&key) {
-                    self.send_to_focused(pane_input).await;
-                }
-            }
+            Mode::Normal => self.on_normal_key(key).await,
             Mode::Prefix => self.on_prefix_command(key).await,
             Mode::Resize => self.on_resize_key(key),
             Mode::Help => {}
-            Mode::Prompt { kind, mut input } => match key.code {
-                KeyCode::Esc => {}
-                KeyCode::Enter => self.submit_prompt(kind, input).await,
-                KeyCode::Backspace => {
-                    input.pop();
-                    self.view.mode = Mode::Prompt { kind, input };
-                }
-                KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    input.push(c);
-                    self.view.mode = Mode::Prompt { kind, input };
-                }
-                _ => self.view.mode = Mode::Prompt { kind, input },
-            },
+            Mode::Confirm { folder, name } => self.on_confirm_key(key, folder, name).await,
+            Mode::Prompt { kind, input } => self.on_prompt_key(key, kind, input).await,
+        }
+    }
+
+    async fn on_normal_key(&mut self, key: KeyEvent) {
+        if input::is_prefix(&key) {
+            self.view.mode = Mode::Prefix;
+        } else if let Some(pane_input) = input::translate(&key) {
+            self.send_to_focused(pane_input).await;
+        }
+    }
+
+    async fn on_confirm_key(&mut self, key: KeyEvent, folder: FolderId, name: String) {
+        match key.code {
+            KeyCode::Enter | KeyCode::Char('y' | 'Y') => {
+                self.call_reporting_errors("folder.delete", json!({ "folder": folder }))
+                    .await;
+            }
+            KeyCode::Char('n' | 'N') | KeyCode::Esc => {}
+            _ => self.view.mode = Mode::Confirm { folder, name },
+        }
+    }
+
+    async fn on_prompt_key(&mut self, key: KeyEvent, kind: PromptKind, mut input: String) {
+        match key.code {
+            KeyCode::Esc => {}
+            KeyCode::Enter => self.submit_prompt(kind, input).await,
+            KeyCode::Backspace => {
+                input.pop();
+                self.view.mode = Mode::Prompt { kind, input };
+            }
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                input.push(c);
+                self.view.mode = Mode::Prompt { kind, input };
+            }
+            _ => self.view.mode = Mode::Prompt { kind, input },
         }
     }
 
